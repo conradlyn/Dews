@@ -1,0 +1,117 @@
+// Mirrors src-tauri/src/data/model.rs + commands.rs (serde camelCase kept as-is).
+
+export type AccountKind = "Local" | "GoogleReader" | "FreshRSS";
+
+export interface Account {
+  id: number;
+  kind: AccountKind;
+  name: string;
+  endpoint: string;
+  username: string;
+  password_protected: string;
+  is_active: boolean;
+}
+
+export interface AccountInput {
+  id: number;
+  kind: AccountKind;
+  name: string;
+  endpoint: string;
+  username: string;
+  password: string;
+  is_active: boolean;
+}
+
+export interface FeedGroup {
+  id: string;
+  account_id: number;
+  name: string;
+}
+
+export interface Feed {
+  id: string;
+  account_id: number;
+  remote_id: string;
+  title: string;
+  url: string;
+  website: string | null;
+  group_id: string | null;
+  last_synced: string | null;
+  failure_count: number;
+}
+
+export interface Article {
+  id: string;
+  account_id: number;
+  feed_id: string;
+  remote_id: string;
+  title: string;
+  author: string | null;
+  link: string | null;
+  published: number;
+  is_read: boolean;
+  is_starred: boolean;
+  is_archived: boolean;
+  snippet: string | null;
+  thumbnail_url: string | null;
+}
+
+export interface AppSettings {
+  dark_theme: boolean;
+  font_size: number;
+  feed_font_family: string;
+  feed_font_size: number;
+  article_font_family: string;
+  article_font_size: number;
+  reading_font_family: string;
+  summary_lines: number;
+  thumbnail_size: number;
+  mark_as_read_on_open: boolean;
+  mark_as_read_when_next: boolean;
+  sync_interval_minutes: number;
+  filter: string;
+  feed_column_width: number;
+  article_column_width: number;
+}
+
+export interface AppData {
+  accounts: Account[];
+  groups: FeedGroup[];
+  feeds: Feed[];
+  articles: Article[];
+  settings: AppSettings;
+}
+
+export interface SyncReport {
+  feeds: number;
+  articles: number;
+  errors: string[];
+  message: string;
+}
+
+export interface SyncFeedInfo {
+  id: string;
+  title: string;
+  account_name: string;
+}
+
+export interface SyncPlan {
+  feeds: SyncFeedInfo[];
+  errors: string[];
+  message: string;
+}
+
+export interface FeedSyncResult {
+  feed_id: string;
+  title: string;
+  articles: number;
+  total: number;
+  error: string | null;
+}
+
+export type Scope =
+  | { type: "all" }
+  | { type: "unread" }
+  | { type: "starred" }
+  | { type: "feed"; id: string }
+  | { type: "group"; id: string };
