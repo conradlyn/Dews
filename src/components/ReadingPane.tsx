@@ -1,8 +1,9 @@
 import { memo } from "react";
-import type { Article } from "../types";
+import type { AppSettings, Article } from "../types";
 
 interface Props {
   article: Article | null;
+  settings: AppSettings;
   feedTitle: string;
   html: string;
   fetching: boolean;
@@ -13,6 +14,7 @@ interface Props {
 
 function ReadingPane({
   article,
+  settings,
   feedTitle,
   html,
   fetching,
@@ -45,7 +47,15 @@ function ReadingPane({
   return (
     <section className="reading-pane">
       <div className="reading-head">
-        <h2>{article.title || "(无标题)"}</h2>
+        <h2
+          style={{
+            fontFamily: `"${settings.reading_title_font_family}", "Microsoft YaHei", sans-serif`,
+            fontSize: settings.reading_title_font_size,
+            fontWeight: settings.reading_title_bold ? 800 : 400,
+          }}
+        >
+          {article.title || "(无标题)"}
+        </h2>
         <div className="reading-meta">
           <span>{feedTitle}</span>
           {date && <span>· {date}</span>}

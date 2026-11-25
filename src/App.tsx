@@ -682,6 +682,7 @@ export default function App() {
         />
         <ReadingPane
           article={selected}
+          settings={settings}
           feedTitle={feedTitle}
           html={html}
           fetching={!!selected && fetchingId === selected.id}

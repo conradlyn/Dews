@@ -165,7 +165,21 @@ pub struct AppSettings {
     pub feed_font_size: f64,
     pub article_font_family: String,
     pub article_font_size: f64,
+    /// Article-list title typography. Defaults match the previous hardcoded style.
+    #[serde(default = "default_article_title_font_family")]
+    pub article_title_font_family: String,
+    #[serde(default = "default_article_title_font_size")]
+    pub article_title_font_size: f64,
+    #[serde(default = "default_title_bold")]
+    pub article_title_bold: bool,
     pub reading_font_family: String,
+    /// Reading-pane article title typography.
+    #[serde(default = "default_reading_title_font_family")]
+    pub reading_title_font_family: String,
+    #[serde(default = "default_reading_title_font_size")]
+    pub reading_title_font_size: f64,
+    #[serde(default = "default_title_bold")]
+    pub reading_title_bold: bool,
     pub summary_lines: i32,
     /// 0 = off, 1 = small, 2 = medium, 3 = large.
     pub thumbnail_size: i32,
@@ -193,6 +207,11 @@ fn default_reading_margin() -> i32 { 34 }
 fn default_reading_line_height() -> f64 { 1.85 }
 fn default_reading_indent() -> i32 { 0 }
 fn default_button_style() -> String { "icon-text".to_string() }
+fn default_article_title_font_family() -> String { "Microsoft YaHei".to_string() }
+fn default_article_title_font_size() -> f64 { 13.0 }
+fn default_reading_title_font_family() -> String { "Microsoft YaHei".to_string() }
+fn default_reading_title_font_size() -> f64 { 19.0 }
+fn default_title_bold() -> bool { true }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -203,7 +222,13 @@ impl Default for AppSettings {
             feed_font_size: 13.0,
             article_font_family: "Microsoft YaHei".to_string(),
             article_font_size: 13.0,
+            article_title_font_family: default_article_title_font_family(),
+            article_title_font_size: default_article_title_font_size(),
+            article_title_bold: default_title_bold(),
             reading_font_family: "Microsoft YaHei".to_string(),
+            reading_title_font_family: default_reading_title_font_family(),
+            reading_title_font_size: default_reading_title_font_size(),
+            reading_title_bold: default_title_bold(),
             summary_lines: 2,
             thumbnail_size: 1,
             mark_as_read_on_open: true,

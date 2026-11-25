@@ -313,6 +313,28 @@ export default function SettingsDialog({
                     value={settings.article_font_size}
                     onChange={(e) => onChange({ article_font_size: Number(e.target.value) })}
                   />
+                  <label>标题字体</label>
+                  <FontSelect
+                    value={settings.article_title_font_family}
+                    fonts={fonts}
+                    onSelect={(v) => onChange({ article_title_font_family: v })}
+                  />
+                  <label>标题字号（px）</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={24}
+                    value={settings.article_title_font_size}
+                    onChange={(e) => onChange({ article_title_font_size: Number(e.target.value) })}
+                  />
+                  <label>标题粗体</label>
+                  <div className="field-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.article_title_bold}
+                      onChange={(e) => onChange({ article_title_bold: e.target.checked })}
+                    />
+                  </div>
                   <label>摘要行数</label>
                   <select
                     value={settings.summary_lines}
@@ -348,6 +370,28 @@ export default function SettingsDialog({
                     value={settings.font_size}
                     onChange={(e) => onChange({ font_size: Number(e.target.value) })}
                   />
+                  <label>标题字体</label>
+                  <FontSelect
+                    value={settings.reading_title_font_family}
+                    fonts={fonts}
+                    onSelect={(v) => onChange({ reading_title_font_family: v })}
+                  />
+                  <label>标题字号（px）</label>
+                  <input
+                    type="number"
+                    min={12}
+                    max={36}
+                    value={settings.reading_title_font_size}
+                    onChange={(e) => onChange({ reading_title_font_size: Number(e.target.value) })}
+                  />
+                  <label>标题粗体</label>
+                  <div className="field-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.reading_title_bold}
+                      onChange={(e) => onChange({ reading_title_bold: e.target.checked })}
+                    />
+                  </div>
                   <label>两边空白（px）</label>
                   <input
                     type="number"

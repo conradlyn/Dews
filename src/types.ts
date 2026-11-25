@@ -63,7 +63,13 @@ export interface AppSettings {
   feed_font_size: number;
   article_font_family: string;
   article_font_size: number;
+  article_title_font_family: string;
+  article_title_font_size: number;
+  article_title_bold: boolean;
   reading_font_family: string;
+  reading_title_font_family: string;
+  reading_title_font_size: number;
+  reading_title_bold: boolean;
   summary_lines: number;
   thumbnail_size: number;
   mark_as_read_on_open: boolean;

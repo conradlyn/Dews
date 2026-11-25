@@ -152,7 +152,12 @@ function ArticleList({
               <div className="body">
                 <div
                   className="title"
-                  style={{ WebkitLineClamp: 2 }}
+                  style={{
+                    WebkitLineClamp: 2,
+                    fontFamily: `"${settings.article_title_font_family}", "Microsoft YaHei", sans-serif`,
+                    fontSize: settings.article_title_font_size,
+                    fontWeight: settings.article_title_bold ? 800 : 400,
+                  }}
                   title={article.title}
                 >
                   {article.title || "(无标题)"}
