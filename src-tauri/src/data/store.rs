@@ -16,7 +16,7 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Metadata written to data.json. Deliberately omits article bodies.
 #[derive(Serialize)]
@@ -382,6 +382,15 @@ const KEYCHAIN_SERVICE: &str = "com.lfk.dews.account";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_MARKER: &str = "keychain:v1:";
 
+/// Decrypted secrets are cached per process. Without this, every star/read
+/// click and every sync step creates a GoogleReader client and re-reads the
+/// Keychain, which can show the macOS authorization dialog repeatedly.
+#[cfg(target_os = "macos")]
+fn keychain_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Platform-native secret protection: DPAPI on Windows, Keychain on macOS,
 /// pass-through on other Unix (Linux dev only; no secure store available).
 pub struct SecretProtector;
@@ -531,6 +540,9 @@ fn keychain_protect(plain: &str) -> Result<String, String> {
     let account = keychain_fingerprint(plain);
     set_generic_password(KEYCHAIN_SERVICE, &account, plain.as_bytes())
         .map_err(|e| format!("Keychain 写入失败: {}", e))?;
+    if let Ok(mut cache) = keychain_cache().lock() {
+        cache.remove(&account);
+    }
     Ok(format!("{}{}", KEYCHAIN_MARKER, account))
 }
 
@@ -541,16 +553,30 @@ fn keychain_unprotect(account: &str) -> Result<String, String> {
     if account.len() != 16 || !account.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("无效的 Keychain 引用".to_string());
     }
+    // Hold the cache lock across the Keychain read so concurrent sync/mark
+    // calls can only trigger one authorization dialog for the same secret.
+    let mut cache = keychain_cache()
+        .lock()
+        .map_err(|e| format!("Keychain 缓存访问失败: {e}"))?;
+    if let Some(cached) = cache.get(account) {
+        return Ok(cached.clone());
+    }
     let bytes = get_generic_password(KEYCHAIN_SERVICE, account)
         .map_err(|e| format!("Keychain 读取失败: {}", e))?;
-    String::from_utf8(bytes).map_err(|e| e.to_string())
+    let value = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    cache.insert(account.to_string(), value.clone());
+    Ok(value)
 }
 
 #[cfg(all(test, target_os = "macos"))]
 fn keychain_delete(account: &str) -> Result<(), String> {
     use security_framework::passwords::delete_generic_password;
     delete_generic_password(KEYCHAIN_SERVICE, account)
-        .map_err(|e| format!("Keychain 删除失败: {}", e))
+        .map_err(|e| format!("Keychain 删除失败: {}", e))?;
+    if let Ok(mut cache) = keychain_cache().lock() {
+        cache.remove(account);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
