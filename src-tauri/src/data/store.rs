@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 /// Metadata written to data.json. Deliberately omits article bodies.
 #[derive(Serialize)]
@@ -390,7 +390,8 @@ const KEYCHAIN_MARKER: &str = "keychain:v1:";
 /// Keychain, which can show the macOS authorization dialog repeatedly.
 #[cfg(target_os = "macos")]
 fn keychain_cache() -> &'static Mutex<HashMap<String, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, String>>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

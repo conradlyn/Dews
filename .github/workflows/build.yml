@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
@@ -40,6 +40,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Ensure VBScript for MSI packaging
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $feature = Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue |
+            Where-Object { $_.FeatureName -match 'VBScript' } | Select-Object -First 1
+          if ($feature) {
+            if ($feature.State -ne 'Enabled') {
+              Enable-WindowsOptionalFeature -Online -FeatureName $feature.FeatureName -NoRestart | Out-Null
+            }
+          } else {
+            dism /online /add-capability /capabilityname:VBSCRIPT~~~~ /norestart
+          }
 
       - name: Build installers
         run: npm run tauri build -- --bundles nsis,msi
@@ -62,7 +76,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
@@ -106,7 +120,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
