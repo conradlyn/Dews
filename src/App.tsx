@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { api } from "./api";
 import rssIcon from "./assets/rss.png";
 import AccountDialog from "./components/AccountDialog";
@@ -39,15 +39,21 @@ export default function App() {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [feedUrl, setFeedUrl] = useState("");
   const [confirmFeedId, setConfirmFeedId] = useState<string | null>(null);
-  const [drag, setDrag] = useState<{
+  // All splitter drag state lives in refs so no re-render can tear down the
+  // active drag. `dragging` only drives the visual highlight.
+  type DragState = {
     which: "feed" | "article";
     startX: number;
     startW: number;
-  } | null>(null);
-  const [dragWidth, setDragWidth] = useState<number | null>(null);
+    target: HTMLElement;
+    pointerId: number;
+  };
+  const dragRef = useRef<DragState | null>(null);
   const dragWidthRef = useRef<number | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const [dragging, setDragging] = useState<"feed" | "article" | null>(null);
   const toastTimer = useRef<number | null>(null);
-  const fileInput = useRef<HTMLInputElement | null>(null);
 
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error });
@@ -186,7 +192,7 @@ export default function App() {
     }
     let cancelled = false;
     void api
-      .getArticleHtml(selectedId)
+      .getArticleHtml(selectedId, data?.settings)
       .then((page) => {
         if (!cancelled) setHtml(page);
       })
@@ -203,6 +209,9 @@ export default function App() {
     data?.settings.dark_theme,
     data?.settings.font_size,
     data?.settings.reading_font_family,
+    data?.settings.reading_margin,
+    data?.settings.reading_line_height,
+    data?.settings.reading_indent,
     notify,
   ]);
 
@@ -220,41 +229,108 @@ export default function App() {
     return () => window.removeEventListener("message", onMessage);
   }, [notify]);
 
-  // Column splitters: only commit to disk on mouse-up (debounced save handles it).
-  useEffect(() => {
-    if (!drag) return;
-    const onMove = (event: MouseEvent) => {
-      const delta = event.clientX - drag.startX;
-      const max = drag.which === "feed" ? 460 : 640;
-      const next = Math.round(Math.max(180, Math.min(max, drag.startW + delta)));
-      dragWidthRef.current = next;
-      // Keep dragging local: updating data on every mousemove re-renders the
-      // whole 5000-row list and triggers a debounced disk save each frame.
-      setDragWidth(next);
-    };
-    const onUp = () => {
-      const width = dragWidthRef.current;
-      if (width !== null) {
-        if (drag.which === "feed") patchSettings({ feed_column_width: width });
-        else patchSettings({ article_column_width: width });
+  // Column splitters use Pointer Events with pointer capture: once captured,
+  // every move/up is delivered to the splitter even if the cursor leaves the
+  // window or an iframe, so the drag can never get "stuck". All listeners are
+  // bound once; the active drag is read from a ref, never from state.
+  const finishDrag = useCallback(() => {
+    if (!dragRef.current) return;
+    const current = dragRef.current;
+    if (rafRef.current !== null) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    const width = dragWidthRef.current;
+    if (width !== null) {
+      const prop = current.which === "feed" ? "--feed-width" : "--article-width";
+      workspaceRef.current?.style.setProperty(prop, `${width}px`);
+      if (current.which === "feed") patchSettings({ feed_column_width: width });
+      else patchSettings({ article_column_width: width });
+    }
+    // Release the pointer capture explicitly and restore the cursor. Without
+    // this the captured element can keep the col-resize cursor after release.
+    try {
+      if (current.target.hasPointerCapture(current.pointerId)) {
+        current.target.releasePointerCapture(current.pointerId);
       }
-      dragWidthRef.current = null;
-      setDragWidth(null);
-      setDrag(null);
+    } catch {
+      /* capture may already be gone */
+    }
+    dragRef.current = null;
+    dragWidthRef.current = null;
+    setDragging(null);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    // Freeze the splitter cursor as a normal arrow until the mouse moves.
+    document.body.classList.add("splitter-idle");
+  }, [patchSettings]);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) {
+        // A real cursor move after release restores the resize affordance.
+        document.body.classList.remove("splitter-idle");
+        return;
+      }
+      const max = d.which === "feed" ? 520 : 900;
+      const next = Math.round(
+        Math.max(180, Math.min(max, d.startW + (event.clientX - d.startX))),
+      );
+      dragWidthRef.current = next;
+      if (rafRef.current !== null) return;
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        const w = dragWidthRef.current;
+        const active = dragRef.current;
+        if (w !== null && active) {
+          const prop = active.which === "feed" ? "--feed-width" : "--article-width";
+          workspaceRef.current?.style.setProperty(prop, `${w}px`);
+        }
+      });
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    const onUp = () => finishDrag();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("blur", onUp);
+    document.addEventListener("visibilitychange", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("blur", onUp);
+      document.removeEventListener("visibilitychange", onUp);
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
     };
-  }, [drag, patchSettings]);
+  }, [finishDrag]);
+
+  const startDrag =
+    (which: "feed" | "article") =>
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const startW =
+        which === "feed"
+          ? settings.feed_column_width
+          : settings.article_column_width;
+      dragRef.current = {
+        which,
+        startX: event.clientX,
+        startW,
+        target: event.currentTarget,
+        pointerId: event.pointerId,
+      };
+      dragWidthRef.current = startW;
+      setDragging(which);
+      // Capture the pointer on the splitter so up/move events are guaranteed.
+      event.currentTarget.setPointerCapture(event.pointerId);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    };
 
   const handleSelect = useCallback((id: string) => {
     if (id === selectedId || !data) return;
@@ -317,7 +393,7 @@ export default function App() {
     if (fetchingId) return;
     setFetchingId(article.id);
     try {
-      const page = await api.fetchFullText(article.id);
+      const page = await api.fetchFullText(article.id, data?.settings);
       // Only apply if the user hasn't moved to another article meanwhile.
       if (selectedId === article.id) setHtml(page);
       await refresh();
@@ -327,7 +403,7 @@ export default function App() {
     } finally {
       setFetchingId(null);
     }
-  }, [fetchingId, selectedId, notify, refresh]);
+  }, [fetchingId, selectedId, notify, refresh, data?.settings]);
 
   const openOriginal = useCallback((url: string) => {
     void api.openExternal(url).catch((e) => notify(String(e), true));
@@ -469,7 +545,6 @@ export default function App() {
       notify(String(e), true);
     } finally {
       setBusy(false);
-      if (fileInput.current) fileInput.current.value = "";
     }
   };
 
@@ -490,8 +565,8 @@ export default function App() {
   const settings = data.settings;
   const shellClass = `app-shell${settings.dark_theme ? " dark" : ""}`;
   const workspaceStyle = {
-    "--feed-width": `${drag?.which === "feed" && dragWidth !== null ? dragWidth : settings.feed_column_width}px`,
-    "--article-width": `${drag?.which === "article" && dragWidth !== null ? dragWidth : settings.article_column_width}px`,
+    "--feed-width": `${settings.feed_column_width}px`,
+    "--article-width": `${settings.article_column_width}px`,
   } as CSSProperties;
 
   return (
@@ -507,22 +582,6 @@ export default function App() {
         <button className="tool-btn" disabled={busy} onClick={() => void runSync()}>
           {busy ? "同步中…" : "⟳ 同步"}
         </button>
-        <button className="tool-btn" onClick={() => fileInput.current?.click()}>
-          导入 OPML
-        </button>
-        <button className="tool-btn" onClick={() => void exportOpml()}>
-          导出 OPML
-        </button>
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".opml,.xml,text/xml,application/xml"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) void importOpml(file);
-          }}
-        />
         <input
           className="search-box"
           type="text"
@@ -542,7 +601,7 @@ export default function App() {
         </button>
       </header>
 
-      <div className="workspace" style={workspaceStyle}>
+      <div className="workspace" ref={workspaceRef} style={workspaceStyle}>
         <FeedPane
           data={data}
           scope={scope}
@@ -550,10 +609,8 @@ export default function App() {
           onRemoveFeed={(id) => void removeFeed(id)}
         />
         <div
-          className={`splitter${drag?.which === "feed" ? " dragging" : ""}`}
-          onMouseDown={(e) =>
-            setDrag({ which: "feed", startX: e.clientX, startW: settings.feed_column_width })
-          }
+          className={`splitter${dragging === "feed" ? " dragging" : ""}`}
+          onPointerDown={startDrag("feed")}
         />
         <ArticleList
           data={data}
@@ -566,14 +623,8 @@ export default function App() {
           onFilter={(filter) => patchSettings({ filter })}
         />
         <div
-          className={`splitter${drag?.which === "article" ? " dragging" : ""}`}
-          onMouseDown={(e) =>
-            setDrag({
-              which: "article",
-              startX: e.clientX,
-              startW: settings.article_column_width,
-            })
-          }
+          className={`splitter${dragging === "article" ? " dragging" : ""}`}
+          onPointerDown={startDrag("article")}
         />
         <ReadingPane
           article={selected}
@@ -627,7 +678,33 @@ export default function App() {
         <SettingsDialog
           settings={settings}
           fonts={fonts}
+          activeAccount={data.accounts.find((a) => a.is_active) ?? null}
+          groups={data.groups}
+          feeds={data.feeds}
           onChange={patchSettings}
+          onCreateGroup={async (name) => {
+            await api.createGroup(name);
+            await refresh();
+          }}
+          onRenameGroup={async (id, name) => {
+            await api.renameGroup(id, name);
+            await refresh();
+          }}
+          onReorderGroups={async (ids) => {
+            await api.reorderGroups(ids);
+            await refresh();
+          }}
+          onDeleteGroup={async (id) => {
+            await api.deleteGroup(id);
+            await refresh();
+          }}
+          onSetFeedGroup={async (feedId, groupId) => {
+            await api.setFeedGroup(feedId, groupId);
+            await refresh();
+          }}
+          onImportOpml={(file) => void importOpml(file)}
+          onExportOpml={() => void exportOpml()}
+          notify={notify}
           onClose={() => setDialog(null)}
         />
       )}
@@ -636,6 +713,10 @@ export default function App() {
           accounts={data.accounts}
           onAccounts={(accounts) => setData((prev) => (prev ? { ...prev, accounts } : prev))}
           onClose={() => setDialog(null)}
+          onSaved={(accounts, savedId) => {
+            const saved = accounts.find((a) => a.id === savedId);
+            if (saved?.is_active && saved.kind !== "Local") void runSync();
+          }}
           notify={notify}
         />
       )}

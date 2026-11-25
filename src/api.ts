@@ -17,8 +17,10 @@ export const api = {
   isPortable: () => invoke<boolean>("is_portable"),
 
   searchArticles: (query: string) => invoke<string[]>("search_articles", { query }),
-  getArticleHtml: (id: string) => invoke<string>("get_article_html", { id }),
-  fetchFullText: (id: string) => invoke<string>("fetch_full_text", { id }),
+  getArticleHtml: (id: string, settings?: AppSettings) =>
+    invoke<string>("get_article_html", { id, settingsOverride: settings ?? null }),
+  fetchFullText: (id: string, settings?: AppSettings) =>
+    invoke<string>("fetch_full_text", { id, settingsOverride: settings ?? null }),
   markArticle: (id: string, read?: boolean, starred?: boolean) =>
     invoke<void>("mark_article", {
       id,
@@ -32,6 +34,12 @@ export const api = {
     invoke<FeedSyncResult>("sync_feed_articles", { feedId }),
   addFeed: (url: string) => invoke<string>("add_feed", { url }),
   removeFeed: (id: string) => invoke<void>("remove_feed", { id }),
+  createGroup: (name: string) => invoke<void>("create_group", { name }),
+  renameGroup: (id: string, name: string) => invoke<void>("rename_group", { id, name }),
+  reorderGroups: (ids: string[]) => invoke<void>("reorder_groups", { ids }),
+  deleteGroup: (id: string) => invoke<void>("delete_group", { id }),
+  setFeedGroup: (feedId: string, groupId: string | null) =>
+    invoke<void>("set_feed_group", { feedId, groupId }),
   importOpml: (xml: string) => invoke<string>("import_opml", { xml }),
   exportOpml: () => invoke<string>("export_opml"),
 

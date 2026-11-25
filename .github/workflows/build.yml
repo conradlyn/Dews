@@ -1,0 +1,134 @@
+name: Build installers
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows installer (NSIS + MSI)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build installers
+        run: npm run tauri build -- --bundles nsis,msi
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: dews-windows-installer
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  windows-portable:
+    name: Windows portable (zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build app (no installer bundle)
+        run: npm run tauri build -- --no-bundle
+
+      - name: Assemble portable zip
+        shell: pwsh
+        run: |
+          $stage = "portable-stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/dews.exe" -Destination $stage
+          New-Item -ItemType File -Force -Path (Join-Path $stage "portable") | Out-Null
+          $zip = "dews_0.1.0_portable.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          Write-Host "Created $zip"
+
+      - name: Upload portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: dews-windows-portable
+          path: dews_*_portable.zip
+          if-no-files-found: error
+
+  macos-dmg:
+    name: macOS dmg (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build app bundle
+        run: npm run tauri build -- --bundles app
+
+      - name: Create dmg with hdiutil
+        run: |
+          APP="src-tauri/target/release/bundle/macos/dews.app"
+          DMG="src-tauri/target/release/bundle/dmg/dews_0.1.0_aarch64.dmg"
+          mkdir -p "$(dirname "$DMG")"
+          hdiutil create -volname "dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          hdiutil verify "$DMG"
+
+      - name: Upload dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: dews-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error

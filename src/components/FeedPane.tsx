@@ -16,6 +16,17 @@ function sameScope(a: Scope, b: Scope): boolean {
 
 function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [failedIcons, setFailedIcons] = useState<Set<string>>(new Set());
+
+  const faviconUrl = (feed: (typeof data.feeds)[number]): string | null => {
+    const raw = feed.website || feed.url;
+    if (!raw) return null;
+    try {
+      return `${new URL(raw).origin}/favicon.ico`;
+    } catch {
+      return null;
+    }
+  };
 
   const unreadByFeed = useMemo(() => {
     const map = new Map<string, number>();
@@ -36,6 +47,8 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
 
   const feedRow = (feed: (typeof data.feeds)[number], nested = false) => {
     const count = unreadByFeed.get(feed.id) ?? 0;
+    const icon = faviconUrl(feed);
+    const showIcon = icon && !failedIcons.has(feed.id);
     return (
       <div
         key={feed.id}
@@ -43,7 +56,18 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
         onClick={() => onScope({ type: "feed", id: feed.id })}
         title={feed.url}
       >
-        <span className="favicon">📰</span>
+        {showIcon ? (
+          <img
+            className="favicon icon-img"
+            src={icon}
+            alt=""
+            onError={() =>
+              setFailedIcons((prev) => new Set(prev).add(feed.id))
+            }
+          />
+        ) : (
+          <span className="favicon">📰</span>
+        )}
         <span className="label">{feed.title || "(无标题)"}</span>
         {count > 0 && <span className="count">{count}</span>}
         {feed.failure_count > 0 && <span className="count" title="同步失败">⚠</span>}

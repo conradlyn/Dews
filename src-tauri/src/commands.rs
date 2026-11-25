@@ -7,18 +7,23 @@ use crate::data::greader::{self, GReaderItem, GoogleReaderClient};
 use crate::data::html;
 use crate::data::images;
 use crate::data::model::{
-    Account, AccountKind, AppData, AppSettings, Article, Feed, new_id,
+    Account, AccountKind, AppData, AppSettings, Article, Feed, FeedGroup, PendingMark, new_id,
 };
 use crate::data::opml;
 use crate::data::rss::{self, ParsedFeed};
 use crate::data::store::{JsonAppStore, SecretProtector};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 use tauri::State;
 
 pub struct AppState {
     pub store: JsonAppStore,
     pub data: Mutex<AppData>,
+    /// Accounts that recently failed a remote call are skipped briefly so a
+    /// single unavailable server cannot stall every click with a 12s timeout.
+    remote_backoff: Mutex<HashMap<i32, Instant>>,
 }
 
 impl AppState {
@@ -28,6 +33,29 @@ impl AppState {
         Self {
             store,
             data: Mutex::new(data),
+            remote_backoff: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn remote_ready(&self, account_id: i32) -> bool {
+        let Ok(backoff) = self.remote_backoff.lock() else {
+            return true;
+        };
+        match backoff.get(&account_id) {
+            Some(until) => Instant::now() >= *until,
+            None => true,
+        }
+    }
+
+    fn note_remote_failure(&self, account_id: i32) {
+        if let Ok(mut backoff) = self.remote_backoff.lock() {
+            backoff.insert(account_id, Instant::now() + Duration::from_secs(60));
+        }
+    }
+
+    fn note_remote_success(&self, account_id: i32) {
+        if let Ok(mut backoff) = self.remote_backoff.lock() {
+            backoff.remove(&account_id);
         }
     }
 
@@ -218,7 +246,11 @@ pub fn is_portable() -> bool {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_article_html(id: String, state: State<'_, AppState>) -> Result<String, String> {
+pub fn get_article_html(
+    id: String,
+    settings_override: Option<AppSettings>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let data = state.lock()?;
     let article = data
         .articles
@@ -231,13 +263,20 @@ pub fn get_article_html(id: String, state: State<'_, AppState>) -> Result<String
         .filter(|s| !s.trim().is_empty())
         .or_else(|| article.summary_html.as_deref().filter(|s| !s.trim().is_empty()));
     let base = article.link.as_deref().filter(|s| !s.trim().is_empty());
-    let settings = &data.settings;
+    // Prefer the caller's live settings so typography changes take effect
+    // immediately, even before the debounced save reaches the backend.
+    let settings = settings_override.as_ref().unwrap_or(&data.settings);
     let mut page = article_html::render(
         source,
         base,
         settings.dark_theme,
         settings.font_size,
         Some(&settings.reading_font_family),
+        article_html::ReadingStyle {
+            margin_px: settings.reading_margin,
+            line_height: settings.reading_line_height,
+            indent_chars: settings.reading_indent,
+        },
     );
     if page.contains("</body>") {
         page = page.replacen("</body>", &format!("{EXTERNAL_LINK_SCRIPT}</body>"), 1);
@@ -251,9 +290,13 @@ pub fn get_article_html(id: String, state: State<'_, AppState>) -> Result<String
 /// The result replaces `content_html` and is rendered with the reading-pane
 /// CSS so the UI can show it immediately. Only http(s) links are followed.
 #[tauri::command]
-pub async fn fetch_full_text(id: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn fetch_full_text(
+    id: String,
+    settings_override: Option<AppSettings>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     // Snapshot everything needed under the lock, then release before awaiting.
-    let (link, settings_dark, font_size, reading_font) = {
+    let (link, settings_dark, font_size, reading_font, reading_style) = {
         let data = state.lock()?;
         let article = data
             .articles
@@ -272,8 +315,18 @@ pub async fn fetch_full_text(id: String, state: State<'_, AppState>) -> Result<S
         {
             return Err("原文链接不是有效的 http(s) 地址".to_string());
         }
-        let s = &data.settings;
-        (link, s.dark_theme, s.font_size, s.reading_font_family.clone())
+        let s = settings_override.as_ref().unwrap_or(&data.settings);
+        (
+            link,
+            s.dark_theme,
+            s.font_size,
+            s.reading_font_family.clone(),
+            article_html::ReadingStyle {
+                margin_px: s.reading_margin,
+                line_height: s.reading_line_height,
+                indent_chars: s.reading_indent,
+            },
+        )
     };
 
     let client = http_client()?;
@@ -331,6 +384,7 @@ pub async fn fetch_full_text(id: String, state: State<'_, AppState>) -> Result<S
         settings_dark,
         font_size,
         Some(&reading_font),
+        reading_style,
     );
     if page_html.contains("</body>") {
         page_html = page_html.replacen("</body>", &format!("{EXTERNAL_LINK_SCRIPT}</body>"), 1);
@@ -338,6 +392,126 @@ pub async fn fetch_full_text(id: String, state: State<'_, AppState>) -> Result<S
         page_html.push_str(EXTERNAL_LINK_SCRIPT);
     }
     Ok(page_html)
+}
+
+/// Merge a click into the pending queue. Last write wins for each field.
+fn queue_pending_mark(data: &mut AppData, article_id: &str, read: Option<bool>, starred: Option<bool>) {
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Some(pending) = data
+        .pending_marks
+        .iter_mut()
+        .find(|p| p.article_id == article_id)
+    {
+        if read.is_some() {
+            pending.read = read;
+        }
+        if starred.is_some() {
+            pending.starred = starred;
+        }
+        pending.updated_at = now;
+    } else {
+        data.pending_marks.push(PendingMark {
+            article_id: article_id.to_string(),
+            read,
+            starred,
+            updated_at: now,
+        });
+    }
+}
+
+fn remove_processed_pending(data: &mut AppData, processed: &[PendingMark]) {
+    data.pending_marks.retain(|pending| {
+        !processed.iter().any(|done| {
+            done.article_id == pending.article_id
+                && done.read == pending.read
+                && done.starred == pending.starred
+                && done.updated_at == pending.updated_at
+        })
+    });
+}
+
+/// Push queued local marks for one account. Failures leave the queue intact
+/// and are reported through the normal sync summary instead of a toast per
+/// article click.
+async fn flush_pending_for_account(state: &AppState, account: &Account) -> Result<(), String> {
+    if account.kind == AccountKind::Local || !state.remote_ready(account.id) {
+        return Ok(());
+    }
+    let pending: Vec<PendingMark> = {
+        let data = state.lock()?;
+        data.pending_marks
+            .iter()
+            .filter(|p| {
+                data.articles.iter().any(|a| {
+                    a.id == p.article_id
+                        && a.account_id == account.id
+                        && !a.remote_id.is_empty()
+                })
+            })
+            .cloned()
+            .collect()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let outcome: Result<(), String> = async {
+        let mut client =
+            GoogleReaderClient::with_timeout(account.clone(), Duration::from_secs(12))?;
+        let mut processed = Vec::new();
+        for item in pending {
+            let remote_id = {
+                let data = state.lock()?;
+                data.articles
+                    .iter()
+                    .find(|a| a.id == item.article_id)
+                    .map(|a| a.remote_id.clone())
+                    .filter(|id| !id.is_empty())
+            };
+            let Some(remote_id) = remote_id else { continue };
+            if let Some(value) = item.read {
+                client
+                    .mark(
+                        &remote_id,
+                        value.then_some(greader::READ_TAG),
+                        (!value).then_some(greader::READ_TAG),
+                    )
+                    .await
+                    .map_err(|e| format!("同步已读状态失败：{e}"))?;
+            }
+            if let Some(value) = item.starred {
+                client
+                    .mark(
+                        &remote_id,
+                        value.then_some(greader::STARRED_TAG),
+                        (!value).then_some(greader::STARRED_TAG),
+                    )
+                    .await
+                    .map_err(|e| format!("同步星标状态失败：{e}"))?;
+            }
+            processed.push(item);
+        }
+        if !processed.is_empty() {
+            let mut data = state.lock()?;
+            remove_processed_pending(&mut data, &processed);
+            state.persist(&data)?;
+        }
+        Ok(())
+    }
+    .await;
+
+    match outcome {
+        Ok(()) => {
+            state.note_remote_success(account.id);
+            Ok(())
+        }
+        Err(e) => {
+            // Do not retry a dead server on every star click. The queued mark
+            // is retried by the next sync once the cooldown expires.
+            state.note_remote_failure(account.id);
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -366,34 +540,23 @@ pub async fn mark_article(
             (article.account_id, article.remote_id.clone())
         };
         let account = data.accounts.iter().find(|a| a.id == account_id).cloned();
+        let is_remote = account
+            .as_ref()
+            .is_some_and(|a| a.kind != AccountKind::Local && !remote_id.is_empty());
+        if is_remote {
+            queue_pending_mark(&mut data, &id, read, starred);
+        }
         state.persist(&data)?;
         (account, remote_id)
     };
 
     if let Some(account) = account {
         if account.kind != AccountKind::Local && !remote_id.is_empty() {
-            // Push before returning so the next sync can safely trust the
-            // server's read/starred flags instead of stale local copies.
-            let mut client = GoogleReaderClient::new(account)?;
-            if let Some(value) = read {
-                client
-                    .mark(
-                        &remote_id,
-                        value.then_some(greader::READ_TAG),
-                        (!value).then_some(greader::READ_TAG),
-                    )
-                    .await
-                    .map_err(|e| format!("同步已读状态失败：{e}"))?;
-            }
-            if let Some(value) = starred {
-                client
-                    .mark(
-                        &remote_id,
-                        value.then_some(greader::STARRED_TAG),
-                        (!value).then_some(greader::STARRED_TAG),
-                    )
-                    .await
-                    .map_err(|e| format!("同步星标状态失败：{e}"))?;
+            // Best effort. A transport/auth failure must not undo the local
+            // click or raise a red toast on every star. The mark stays queued
+            // and is retried by the next sync (with a short cooldown).
+            if let Err(e) = flush_pending_for_account(&state, &account).await {
+                eprintln!("远程阅读状态暂时无法同步，已加入待同步队列：{e}");
             }
         }
     }
@@ -496,13 +659,25 @@ fn upsert_article(data: &mut AppData, article: Article) -> bool {
 
 const MAX_ARTICLES_PER_FEED: usize = 5000;
 
-/// Insert or update from the server: the server's read/starred flags win.
-/// Local-only archiving is preserved because Google Reader has no archive bit.
-fn upsert_article_synced(data: &mut AppData, article: Article) -> bool {
+/// Insert or update from the server: the server's read/starred flags normally
+/// win. Articles with an unsent local mark keep that flag, and local-only
+/// archiving is always preserved because Google Reader has no archive bit.
+fn upsert_article_synced(
+    data: &mut AppData,
+    article: Article,
+    pending_ids: Option<&HashSet<String>>,
+) -> bool {
     if let Some(existing) = data.articles.iter_mut().find(|a| a.id == article.id) {
         let archived = existing.is_archived;
+        let keep_local = pending_ids.is_some_and(|ids| ids.contains(&article.id));
+        let read = existing.is_read;
+        let starred = existing.is_starred;
         *existing = article;
         existing.is_archived = archived;
+        if keep_local {
+            existing.is_read = read;
+            existing.is_starred = starred;
+        }
         false
     } else {
         data.articles.push(article);
@@ -541,6 +716,12 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                 .collect();
             plan.feeds.extend(local);
             continue;
+        }
+
+        // Push any locally queued read/star changes first. If the remote is
+        // unavailable, report it once here instead of on every article click.
+        if let Err(e) = flush_pending_for_account(state, &account).await {
+            plan.errors.push(format!("{}：待同步阅读状态推送失败：{e}", account.name));
         }
 
         let mut client = match GoogleReaderClient::new(account.clone()) {
@@ -627,6 +808,10 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
             data.feeds
                 .retain(|f| f.account_id != account.id || live_ids.contains(&f.id));
             data.articles.retain(|a| !removed.contains(&a.feed_id));
+            let live_articles: HashSet<String> =
+                data.articles.iter().map(|a| a.id.clone()).collect();
+            data.pending_marks
+                .retain(|p| live_articles.contains(&p.article_id));
             // Drop groups left empty by the removal.
             let active_groups: std::collections::HashSet<String> =
                 data.feeds.iter().filter_map(|f| f.group_id.clone()).collect();
@@ -702,6 +887,25 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
     };
     let mut added = 0usize;
 
+    // Retry locally queued marks before the server flags are read back. If the
+    // push still fails, pending_ids keeps those local flags authoritative.
+    if let Some(account) = account.as_ref() {
+        if account.kind != AccountKind::Local {
+            let _ = flush_pending_for_account(state, account).await;
+        }
+    }
+    let pending_ids = match state.lock() {
+        Ok(data) => data
+            .pending_marks
+            .iter()
+            .map(|p| p.article_id.clone())
+            .collect::<HashSet<String>>(),
+        Err(e) => {
+            result.error = Some(e);
+            return result;
+        }
+    };
+
     let sync = async {
         let now = chrono::Utc::now().to_rfc3339();
         if let Some(account) = account {
@@ -745,7 +949,7 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                 let mut data = state.lock()?;
                 for item in &items {
                     let article = article_from_greader(account.id, &feed.id, item);
-                    if upsert_article_synced(&mut data, article) {
+                    if upsert_article_synced(&mut data, article, Some(&pending_ids)) {
                         added += 1;
                     }
                 }
@@ -836,7 +1040,15 @@ async fn add_feed_inner(url: &str, state: &AppState) -> Result<String, String> {
         let parsed = fetch_rss(&client, url).await?;
         let title = parsed.title.clone();
         let website = parsed.site_url.clone();
-        let default_group = state.lock()?.groups.first().map(|g| g.id.clone());
+        // Only groups owned by this account may hold its feeds. Taking the
+        // global first group could assign a local feed to a remote group.
+        let default_group = {
+            let data = state.lock()?;
+            data.groups
+                .iter()
+                .find(|g| g.account_id == account.id)
+                .map(|g| g.id.clone())
+        };
         let feed = Feed {
             id: new_id(),
             account_id: account.id,
@@ -896,6 +1108,149 @@ async fn add_feed_inner(url: &str, state: &AppState) -> Result<String, String> {
             }
         ))
     }
+}
+
+/// Group management is only valid for the local account. Remote (FreshRSS /
+/// GoogleReader) groups are owned by the server and rebuilt on every sync.
+fn active_local_account_id(data: &AppData) -> Result<i32, String> {
+    let active = data
+        .accounts
+        .iter()
+        .find(|a| a.is_active)
+        .ok_or_else(|| "没有可用的活动账户".to_string())?;
+    if active.kind != AccountKind::Local {
+        return Err("分组管理仅在本地账户下可用。".to_string());
+    }
+    Ok(active.id)
+}
+
+/// Reorder one account's groups in place while leaving other accounts' groups
+/// at their existing positions in the vector.
+fn reorder_groups_for(
+    groups: &mut Vec<FeedGroup>,
+    account_id: i32,
+    ids: &[String],
+) -> Result<(), String> {
+    let owned: Vec<String> = groups
+        .iter()
+        .filter(|g| g.account_id == account_id)
+        .map(|g| g.id.clone())
+        .collect();
+    if ids.len() != owned.len() || !owned.iter().all(|id| ids.contains(id)) {
+        return Err("分组顺序参数无效。".to_string());
+    }
+    let slots: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.account_id == account_id)
+        .map(|(i, _)| i)
+        .collect();
+    let ordered: Vec<FeedGroup> = ids
+        .iter()
+        .map(|id| groups.iter().find(|g| &g.id == id).cloned().unwrap())
+        .collect();
+    for (slot, group) in slots.into_iter().zip(ordered) {
+        groups[slot] = group;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_group(name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("分组名称不能为空。".to_string());
+    }
+    let mut data = state.lock()?;
+    let account_id = active_local_account_id(&data)?;
+    if data
+        .groups
+        .iter()
+        .any(|g| g.account_id == account_id && g.name == name)
+    {
+        return Err("分组名称已存在。".to_string());
+    }
+    data.groups.push(FeedGroup {
+        id: format!("local:{}", new_id()),
+        account_id,
+        name,
+    });
+    state.persist(&data)
+}
+
+#[tauri::command]
+pub fn rename_group(id: String, name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("分组名称不能为空。".to_string());
+    }
+    let mut data = state.lock()?;
+    let account_id = active_local_account_id(&data)?;
+    if data.groups.iter().any(|g| {
+        g.id != id && g.account_id == account_id && g.name == name
+    }) {
+        return Err("分组名称已存在。".to_string());
+    }
+    let group = data
+        .groups
+        .iter_mut()
+        .find(|g| g.id == id && g.account_id == account_id)
+        .ok_or_else(|| "找不到该分组。".to_string())?;
+    group.name = name;
+    state.persist(&data)
+}
+
+#[tauri::command]
+pub fn reorder_groups(ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut data = state.lock()?;
+    let account_id = active_local_account_id(&data)?;
+    reorder_groups_for(&mut data.groups, account_id, &ids)?;
+    state.persist(&data)
+}
+
+#[tauri::command]
+pub fn delete_group(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut data = state.lock()?;
+    let account_id = active_local_account_id(&data)?;
+    if !data.groups.iter().any(|g| g.id == id && g.account_id == account_id) {
+        return Err("找不到该分组。".to_string());
+    }
+    // Move the deleted group's feeds to the first remaining local group, or
+    // leave them ungrouped when no group is left.
+    let fallback = data
+        .groups
+        .iter()
+        .find(|g| g.account_id == account_id && g.id != id)
+        .map(|g| g.id.clone());
+    for feed in data.feeds.iter_mut() {
+        if feed.account_id == account_id && feed.group_id.as_deref() == Some(id.as_str()) {
+            feed.group_id = fallback.clone();
+        }
+    }
+    data.groups.retain(|g| g.id != id || g.account_id != account_id);
+    state.persist(&data)
+}
+
+#[tauri::command]
+pub fn set_feed_group(
+    feed_id: String,
+    group_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut data = state.lock()?;
+    let account_id = active_local_account_id(&data)?;
+    if let Some(ref gid) = group_id {
+        if !data.groups.iter().any(|g| g.id == *gid && g.account_id == account_id) {
+            return Err("分组不存在。".to_string());
+        }
+    }
+    let feed = data
+        .feeds
+        .iter_mut()
+        .find(|f| f.id == feed_id && f.account_id == account_id)
+        .ok_or_else(|| "找不到该订阅源。".to_string())?;
+    feed.group_id = group_id;
+    state.persist(&data)
 }
 
 #[tauri::command]
@@ -1072,6 +1427,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reorder_groups_only_touches_owned_account() {
+        let mk = |id: &str, account_id: i32| FeedGroup {
+            id: id.to_string(),
+            account_id,
+            name: id.to_string(),
+        };
+        let mut groups = vec![
+            mk("local:1", 1),
+            mk("gr2:A", 2),
+            mk("local:2", 1),
+            mk("gr2:B", 2),
+        ];
+        reorder_groups_for(&mut groups, 1, &["local:2".to_string(), "local:1".to_string()])
+            .unwrap();
+        let ids: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
+        assert_eq!(ids, vec!["local:2", "gr2:A", "local:1", "gr2:B"]);
+
+        // An incomplete id list must be rejected without touching the data.
+        assert!(reorder_groups_for(&mut groups, 1, &["local:1".to_string()]).is_err());
+        let after: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
+        assert_eq!(after, ids);
+    }
+
+    #[test]
+    fn group_management_rejects_remote_account() {
+        let remote_active = AppData {
+            accounts: vec![
+                Account {
+                    id: 1,
+                    kind: AccountKind::Local,
+                    is_active: false,
+                    ..Account::default()
+                },
+                Account {
+                    id: 2,
+                    kind: AccountKind::FreshRSS,
+                    is_active: true,
+                    ..Account::default()
+                },
+            ],
+            ..AppData::default()
+        };
+        assert!(active_local_account_id(&remote_active).is_err());
+
+        let local_active = AppData {
+            accounts: vec![Account {
+                id: 1,
+                kind: AccountKind::Local,
+                is_active: true,
+                ..Account::default()
+            }],
+            ..AppData::default()
+        };
+        assert_eq!(active_local_account_id(&local_active).unwrap(), 1);
+    }
+
+    #[test]
     fn external_link_script_is_injected_once() {
         let page = article_html::render(
             Some("<article><p>hello</p></article>"),
@@ -1079,6 +1491,7 @@ mod tests {
             false,
             15,
             None,
+            article_html::ReadingStyle::default(),
         );
         let page = page.replacen("</body>", &format!("{EXTERNAL_LINK_SCRIPT}</body>"), 1);
         assert_eq!(page.matches("__readyou_open").count(), 1);
@@ -1112,11 +1525,58 @@ mod tests {
         remote.is_starred = false;
         assert!(!upsert_article_synced(
             &mut data,
-            article_from_greader(1, "gr1:feed/1", &remote)
+            article_from_greader(1, "gr1:feed/1", &remote),
+            None
         ));
         let stored = &data.articles[0];
         assert!(!stored.is_read, "已读状态以服务器为准");
         assert!(!stored.is_starred, "星标状态以服务器为准");
         assert!(stored.is_archived, "本地归档状态保留");
+    }
+
+    #[test]
+    fn pending_mark_queue_merges_last_write_wins() {
+        let mut data = AppData::default();
+        queue_pending_mark(&mut data, "a1", Some(true), None);
+        queue_pending_mark(&mut data, "a1", None, Some(true));
+        assert_eq!(data.pending_marks.len(), 1);
+        let pending = data.pending_marks[0].clone();
+        assert_eq!(pending.read, Some(true));
+        assert_eq!(pending.starred, Some(true));
+
+        remove_processed_pending(&mut data, &[pending]);
+        assert!(data.pending_marks.is_empty());
+    }
+
+    #[test]
+    fn pending_local_flags_survive_server_refresh() {
+        let item = GReaderItem {
+            id: "item-1".to_string(),
+            title: "同一篇文章".to_string(),
+            link: None,
+            published: 1,
+            summary_html: None,
+            author: None,
+            feed_stream_id: "feed/1".to_string(),
+            feed_title: None,
+            is_read: false,
+            is_starred: false,
+            thumbnail_url: None,
+        };
+        let mut data = AppData::default();
+        let mut local = article_from_greader(1, "gr1:feed/1", &item);
+        local.is_read = true;
+        local.is_starred = true;
+        data.articles.push(local);
+
+        let pending_ids = HashSet::from(["gr1:item-1".to_string()]);
+        assert!(!upsert_article_synced(
+            &mut data,
+            article_from_greader(1, "gr1:feed/1", &item),
+            Some(&pending_ids)
+        ));
+        let stored = &data.articles[0];
+        assert!(stored.is_read, "待推送的已读状态不被服务器刷新覆盖");
+        assert!(stored.is_starred, "待推送的星标状态不被服务器刷新覆盖");
     }
 }

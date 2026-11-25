@@ -47,8 +47,14 @@ pub struct GoogleReaderClient {
 
 impl GoogleReaderClient {
     pub fn new(account: Account) -> Result<Self, String> {
+        Self::with_timeout(account, Duration::from_secs(40))
+    }
+
+    /// Short-timeout variant for interactive marks: a click must never hang
+    /// the UI for the full sync timeout when the remote server is unreachable.
+    pub fn with_timeout(account: Account, timeout: Duration) -> Result<Self, String> {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(40))
+            .timeout(timeout)
             .gzip(true)
             .deflate(true)
             .build()

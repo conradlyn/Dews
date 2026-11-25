@@ -175,7 +175,20 @@ pub struct AppSettings {
     pub filter: String,
     pub feed_column_width: f64,
     pub article_column_width: f64,
+    /// Reading pane: horizontal padding on both sides (px).
+    #[serde(default = "default_reading_margin")]
+    pub reading_margin: i32,
+    /// Reading pane: line height multiplier (e.g. 1.85).
+    #[serde(default = "default_reading_line_height")]
+    pub reading_line_height: f64,
+    /// Reading pane: first-line indent in Chinese characters (0 = none).
+    #[serde(default = "default_reading_indent")]
+    pub reading_indent: i32,
 }
+
+fn default_reading_margin() -> i32 { 34 }
+fn default_reading_line_height() -> f64 { 1.85 }
+fn default_reading_indent() -> i32 { 0 }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -195,8 +208,24 @@ impl Default for AppSettings {
             filter: "all".to_string(),
             feed_column_width: 266.0,
             article_column_width: 404.0,
+            reading_margin: 34,
+            reading_line_height: 1.85,
+            reading_indent: 0,
         }
     }
+}
+
+/// A local read/star change that could not yet be pushed to a remote account.
+/// It is retried on the next sync; meanwhile the local flag stays authoritative
+/// for that article so a server refresh cannot silently undo the user's click.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingMark {
+    pub article_id: String,
+    pub read: Option<bool>,
+    pub starred: Option<bool>,
+    /// Milliseconds since epoch; used to avoid dropping a newer click while a
+    /// previous push is still in flight.
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -206,6 +235,8 @@ pub struct AppData {
     pub feeds: Vec<Feed>,
     pub articles: Vec<Article>,
     pub settings: AppSettings,
+    #[serde(default)]
+    pub pending_marks: Vec<PendingMark>,
 }
 
 /// 32 hex chars, equivalent to C# Guid.NewGuid().ToString("N").

@@ -97,7 +97,21 @@ fn html_encode(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-pub fn render(html: Option<&str>, base_url: Option<&str>, dark: bool, font_size: i32, font_family: Option<&str>) -> String {
+/// Typography controls for the reading pane. Values are clamped in `render`.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadingStyle {
+    pub margin_px: i32,
+    pub line_height: f64,
+    pub indent_chars: i32,
+}
+
+impl Default for ReadingStyle {
+    fn default() -> Self {
+        Self { margin_px: 34, line_height: 1.85, indent_chars: 0 }
+    }
+}
+
+pub fn render(html: Option<&str>, base_url: Option<&str>, dark: bool, font_size: i32, font_family: Option<&str>, style: ReadingStyle) -> String {
     let mut body = clean(html);
     if body.trim().is_empty() {
         body = "<p style=\"color:#888\">（该文章没有可显示的正文，请打开原文阅读。）</p>".to_string();
@@ -113,6 +127,12 @@ pub fn render(html: Option<&str>, base_url: Option<&str>, dark: bool, font_size:
 
     let size = font_size.clamp(12, 26);
     let font = sanitize_font_family(font_family);
+    let margin = style.margin_px.clamp(0, 200);
+    let line_height = style.line_height.clamp(1.0, 3.0);
+    let indent = style.indent_chars.clamp(0, 8);
+    // Images are centered and inset by ~2 Chinese characters on BOTH sides
+    // relative to the body text: 2em per side = 4em total width reduction.
+    let image_inset_em = 4;
     let (bg, fg, muted, link, border, code_bg, quote_bg) = if dark {
         ("#15191f", "#e6edf3", "#9aa6b6", "#79c0ff", "#30363d", "#21262d", "#1b2129")
     } else {
@@ -137,16 +157,33 @@ pub fn render(html: Option<&str>, base_url: Option<&str>, dark: bool, font_size:
   --quote-bg: {quote_bg};
   --font-size: {size}px;
   --reading-font: "{font}";
+  --margin: {margin}px;
+  --line-height: {line_height};
+  --indent: {indent}em;
 }}
 * {{ box-sizing: border-box; }}
-html {{ background: var(--bg); }}
+html {{
+  background: var(--bg);
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}}
+html::-webkit-scrollbar, body::-webkit-scrollbar {{ width: 9px; }}
+html::-webkit-scrollbar-track, body::-webkit-scrollbar-track {{ background: transparent; }}
+html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {{
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}}
+html:hover::-webkit-scrollbar-thumb, body:hover::-webkit-scrollbar-thumb {{ background: var(--border); }}
+html::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover {{ background: var(--muted); }}
 body {{
   margin: 0 auto;
-  padding: 26px 34px 80px;
+  padding: 26px var(--margin) 80px;
   max-width: 800px;
   font-family: var(--reading-font), -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
   font-size: var(--font-size);
-  line-height: 1.85;
+  line-height: var(--line-height);
   color: var(--fg);
   background: var(--bg);
   overflow-wrap: break-word;
@@ -157,10 +194,12 @@ h2 {{ font-size: 1.5em; }}
 h3 {{ font-size: 1.28em; }}
 h4 {{ font-size: 1.12em; }}
 h5, h6 {{ font-size: 1em; }}
-p {{ margin: 0 0 1.15em; }}
+p {{ margin: 0 0 1.15em; text-indent: var(--indent); }}
 a {{ color: var(--link); text-decoration: none; border-bottom: 1px solid var(--border); }}
 a:hover {{ border-bottom-color: var(--link); }}
-img, video {{ max-width: 100%; height: auto; display: block; margin: 1.4em auto; border-radius: 4px; }}
+/* Centered, and inset ~2 Chinese characters on each side so images stay
+   narrower than the text column. */
+img, video {{ max-width: calc(100% - {image_inset_em}em); height: auto; display: block; margin: 1.4em auto; border-radius: 4px; }}
 figure {{ margin: 1.4em 0; }}
 figcaption {{ color: var(--muted); font-size: 0.86em; text-align: center; margin-top: 0.5em; }}
 pre {{ background: var(--code-bg); padding: 14px 18px; border-radius: 6px; overflow-x: auto; font-size: 0.88em; line-height: 1.6; }}
@@ -199,7 +238,7 @@ mod tests {
 
     #[test]
     fn injects_css_and_strips_active_content() {
-        let out = render(Some(ARTICLE), Some("https://example.com/post/1"), false, 18, None);
+        let out = render(Some(ARTICLE), Some("https://example.com/post/1"), false, 18, None, ReadingStyle::default());
         assert!(out.contains("<style>"));
         assert!(out.contains("line-height: 1.85"));
         assert!(out.contains("--font-size: 18px;"));
@@ -215,8 +254,25 @@ mod tests {
     }
 
     #[test]
+    fn reading_style_controls_margin_lineheight_indent_and_image_inset() {
+        let out = render(
+            Some(ARTICLE),
+            None,
+            false,
+            16,
+            None,
+            ReadingStyle { margin_px: 64, line_height: 2.1, indent_chars: 2 },
+        );
+        assert!(out.contains("--margin: 64px;"));
+        assert!(out.contains("--line-height: 2.1"));
+        assert!(out.contains("--indent: 2em;"));
+        assert!(out.contains("max-width: calc(100% - 4em)"));
+        assert!(out.contains("margin: 1.4em auto"));
+    }
+
+    #[test]
     fn dark_theme_and_no_base() {
-        let out = render(Some(ARTICLE), None, true, 15, None);
+        let out = render(Some(ARTICLE), None, true, 15, None, ReadingStyle::default());
         assert!(out.contains("--bg: #15191f"));
         assert!(out.contains("--fg: #e6edf3"));
         assert!(!out.contains("<base"));
@@ -224,7 +280,7 @@ mod tests {
 
     #[test]
     fn font_sanitization() {
-        let out = render(Some(ARTICLE), None, false, 15, Some("Source Han Serif SC"));
+        let out = render(Some(ARTICLE), None, false, 15, Some("Source Han Serif SC"), ReadingStyle::default());
         assert!(out.contains("--reading-font: \"Source Han Serif SC\""));
         assert!(out.contains("font-family: var(--reading-font)"));
         assert_eq!(sanitize_font_family(Some("Arial\"; color:red")), "Arial color:red");

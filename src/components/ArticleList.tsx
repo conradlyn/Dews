@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { AppData, Article, Scope } from "../types";
 
 interface Props {
@@ -13,6 +13,7 @@ interface Props {
 }
 
 const THUMB_PX: Record<number, number> = { 1: 48, 2: 72, 3: 104 };
+const PAGE_SIZE = 150;
 
 // toLocaleString on every row is surprisingly costly with 5000 articles.
 const dateCache = new Map<number, string>();
@@ -44,6 +45,17 @@ function ArticleList({
   const settings = data.settings;
   const thumbPx = THUMB_PX[settings.thumbnail_size] ?? 0;
   const showSnippet = settings.summary_lines > 0;
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [limit, setLimit] = useState(PAGE_SIZE);
+
+  // Reset the rendered window whenever the visible article set changes, so a
+  // new scope/filter starts fast instead of inheriting a huge previous limit.
+  const scopeKey = `${scope.type}:${"id" in scope ? scope.id : ""}|${settings.filter}|${articles.length}`;
+  useEffect(() => {
+    setLimit(PAGE_SIZE);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [scopeKey]);
+
   const feedById = useMemo(
     () => new Map(data.feeds.map((f) => [f.id, f] as const)),
     [data.feeds],
@@ -54,6 +66,19 @@ function ArticleList({
     : scope.type === "group"
       ? data.groups.find((g) => g.id === scope.id)?.name ?? scopeTitle
       : scopeTitle;
+
+  // Incrementally reveal rows as the user nears the bottom. Rendering all
+  // 7000+ rows at once creates tens of thousands of DOM nodes and freezes the
+  // WebView on launch; this keeps the initial mount bounded.
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 600) {
+      setLimit((prev) => Math.min(prev + PAGE_SIZE, articles.length));
+    }
+  };
+
+  const visible = useMemo(() => articles.slice(0, limit), [articles, limit]);
 
   return (
     <section
@@ -84,8 +109,8 @@ function ArticleList({
           ))}
         </div>
       </div>
-      <div className="scroll">
-        {articles.map((article) => {
+      <div className="scroll" ref={scrollRef} onScroll={onScroll}>
+        {visible.map((article) => {
           const feed = feedById.get(article.feed_id);
           const showThumb = thumbPx > 0 && !!article.thumbnail_url;
           // In large mode the image sits above the text instead of beside it.
@@ -142,6 +167,9 @@ function ArticleList({
             </article>
           );
         })}
+        {limit < articles.length && (
+          <div className="load-more">已显示 {limit} / {articles.length} 篇，向下滚动加载更多</div>
+        )}
         {articles.length === 0 && (
           <div className="empty">
             <div className="big">📭</div>

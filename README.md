@@ -15,7 +15,9 @@
 ## 数据存放
 
 - 便携模式：`./data/data.json`（元数据）与 `./data/content.json`（正文）
-- 安装模式：`%LOCALAPPDATA%\dews\`
+- 安装模式（Windows）：`%LOCALAPPDATA%\dews\`
+- 安装模式（macOS）：`~/Library/Application Support/dews/`
+- 安装模式（Linux）：`$XDG_DATA_HOME/dews/`（未设置时为 `~/.local/share/dews/`）
 
 ## 开发
 
@@ -32,6 +34,22 @@ cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo
 ```
 
 发布版必须启用 `custom-protocol`，否则程序会去加载开发服务器地址。
+
+macOS 本地一键构建（`.app` + `.dmg`）：
+
+```bash
+./scripts/build_mac.sh
+```
+
+### GitHub Actions 自动构建
+
+`.github/workflows/build.yml` 在推送 `main`、推送 `v*` 标签、PR 或手动触发时构建三类产物，并在 Actions 页面以 artifact 形式提供下载：
+
+- Windows 安装版：NSIS（`*-setup.exe`）与 MSI
+- Windows 便携版：`dews_*_portable.zip`（含 `dews.exe` 与空的 `portable` 标记文件）
+- macOS：`dews_0.1.0_aarch64.dmg`（arm64）
+
+macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环境下的 `grep` 兼容问题。当前构建为 ad-hoc 签名，对外分发仍需 Developer ID 签名与公证。
 
 ## 测试
 

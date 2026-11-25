@@ -6,6 +6,7 @@ interface Props {
   accounts: Account[];
   onAccounts: (accounts: Account[]) => void;
   onClose: () => void;
+  onSaved: (accounts: Account[], savedId: number) => void;
   notify: (message: string, error?: boolean) => void;
 }
 
@@ -15,7 +16,7 @@ const KINDS: { value: AccountKind; label: string }[] = [
   { value: "GoogleReader", label: "Google Reader 兼容服务" },
 ];
 
-export default function AccountDialog({ accounts, onAccounts, onClose, notify }: Props) {
+export default function AccountDialog({ accounts, onAccounts, onClose, onSaved, notify }: Props) {
   const active = accounts.find((a) => a.is_active) ?? accounts[0];
   const [selectedId, setSelectedId] = useState<number | null>(active?.id ?? null);
   const [kind, setKind] = useState<AccountKind>(active?.kind ?? "Local");
@@ -38,6 +39,17 @@ export default function AccountDialog({ accounts, onAccounts, onClose, notify }:
     setConfirmDelete(false);
   };
 
+  const addNew = () => {
+    setSelectedId(null);
+    setKind("FreshRSS");
+    setName("");
+    setEndpoint("");
+    setUsername("");
+    setPassword("");
+    setIsActive(true);
+    setConfirmDelete(false);
+  };
+
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     try {
@@ -51,6 +63,7 @@ export default function AccountDialog({ accounts, onAccounts, onClose, notify }:
 
   const save = () =>
     run(async () => {
+      const beforeIds = new Set(accounts.map((a) => a.id));
       const next = await api.saveAccount({
         id: selectedId ?? 0,
         kind,
@@ -60,8 +73,14 @@ export default function AccountDialog({ accounts, onAccounts, onClose, notify }:
         password: kind === "Local" ? "" : password,
         is_active: isActive,
       });
+      const saved =
+        selectedId === null
+          ? next.find((a) => !beforeIds.has(a.id)) ?? next[next.length - 1]
+          : next.find((a) => a.id === selectedId) ?? next[0];
       onAccounts(next);
       notify("账户已保存");
+      onClose();
+      if (saved) onSaved(next, saved.id);
     });
 
   const validate = () =>
@@ -101,6 +120,14 @@ export default function AccountDialog({ accounts, onAccounts, onClose, notify }:
                 {account.is_active && <span className="kind">当前</span>}
               </div>
             ))}
+            <button
+              className="tool-btn"
+              disabled={busy}
+              onClick={addNew}
+              style={{ alignSelf: "flex-start" }}
+            >
+              + 新增账户
+            </button>
           </div>
           <div className="form-grid">
             <label>账户类型</label>

@@ -1,4 +1,5 @@
-//! Local JSON document store + Windows DPAPI password protection.
+//! Local JSON document store + platform-native password protection
+//! (Windows DPAPI / macOS Keychain).
 //!
 //! Article bodies can be huge (a few hundred MB after "获取全文"). They live
 //! in a sidecar `content.json` and are only rewritten when the body actually
@@ -6,7 +7,7 @@
 //! rewrites the whole library. Writes stay atomic (temp file + rename).
 
 use crate::data::model::{
-    Account, AccountKind, AppData, AppSettings, Feed, FeedGroup,
+    Account, AccountKind, AppData, AppSettings, Feed, FeedGroup, PendingMark,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -42,6 +43,7 @@ struct DataMeta<'a> {
     feeds: &'a [Feed],
     articles: Vec<ArticleMeta<'a>>,
     settings: &'a AppSettings,
+    pending_marks: &'a [PendingMark],
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -87,20 +89,46 @@ impl JsonAppStore {
         let dir = if portable {
             base.join("data")
         } else {
-            let local = std::env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            // Renamed from ReadYouTauri: keep reading the old folder so an
-            // existing install does not lose its library.
-            let legacy = local.join("ReadYouTauri");
-            let current = local.join("dews");
-            if !current.exists() && legacy.exists() {
-                legacy
-            } else {
-                current
+            #[cfg(target_os = "macos")]
+            {
+                // macOS apps launched from Finder have a read-only CWD (usually
+                // "/"), so never fall back to "." here. Use the standard
+                // per-user Application Support directory.
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                home.join("Library/Application Support/dews")
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let local = std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                // Renamed from ReadYouTauri: keep reading the old folder so an
+                // existing install does not lose its library.
+                let legacy = local.join("ReadYouTauri");
+                let current = local.join("dews");
+                if !current.exists() && legacy.exists() {
+                    legacy
+                } else {
+                    current
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                let data_home = std::env::var_os("XDG_DATA_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(|h| PathBuf::from(h).join(".local/share"))
+                    })
+                    .unwrap_or_else(|| PathBuf::from("."));
+                data_home.join("dews")
             }
         };
-        fs::create_dir_all(&dir).ok();
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("无法创建数据目录 {dir:?}：{e}");
+        }
         let path = data_path.unwrap_or_else(|| dir.join("data.json"));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
@@ -198,6 +226,14 @@ impl JsonAppStore {
         if data.accounts.is_empty() {
             data.accounts.push(local_account());
         }
+        // Seed the hash from what we just loaded. Without this, the first save
+        // (e.g. a settings change on launch) sees last=None and needlessly
+        // rewrites the entire multi-hundred-MB content sidecar.
+        if !legacy {
+            if let Ok(mut last) = self.last_content_hash.lock() {
+                *last = Some(content_hash(&data));
+            }
+        }
         data
     }
 
@@ -248,6 +284,7 @@ impl JsonAppStore {
                 })
                 .collect(),
             settings: &data.settings,
+            pending_marks: &data.pending_marks,
         };
         atomic_write(&self.path, |w| serde_json::to_writer(w, &view).map_err(Into::into))
     }
@@ -334,9 +371,19 @@ fn fresh_data() -> AppData {
     }
 }
 
+#[cfg(windows)]
 const ENTROPY: &[u8] = b"ReadYouDesktop.AccountPassword.v1";
 
-/// Windows DPAPI protection (DataProtectionScope.CurrentUser).
+/// Reference stored in `data.json` on macOS. The secret itself lives in the
+/// login Keychain, keyed by a stable hash of the plaintext plus a fixed
+/// account label; the JSON only ever holds this non-reversible marker.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "com.lfk.dews.account";
+#[cfg(target_os = "macos")]
+const KEYCHAIN_MARKER: &str = "keychain:v1:";
+
+/// Platform-native secret protection: DPAPI on Windows, Keychain on macOS,
+/// pass-through on other Unix (Linux dev only; no secure store available).
 pub struct SecretProtector;
 
 impl SecretProtector {
@@ -345,9 +392,19 @@ impl SecretProtector {
             Some(p) if !p.is_empty() => p,
             _ => return String::new(),
         };
-        match dpapi_protect(plain.as_bytes()) {
-            Ok(bytes) => base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
-            Err(_) => String::new(),
+        #[cfg(target_os = "macos")]
+        {
+            return match keychain_protect(plain) {
+                Ok(marker) => marker,
+                Err(_) => String::new(),
+            };
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            match dpapi_protect(plain.as_bytes()) {
+                Ok(bytes) => base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+                Err(_) => String::new(),
+            }
         }
     }
 
@@ -356,6 +413,13 @@ impl SecretProtector {
             Some(c) if !c.is_empty() => c,
             _ => return String::new(),
         };
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(account) = cipher.strip_prefix(KEYCHAIN_MARKER) {
+                return keychain_unprotect(account).unwrap_or_default();
+            }
+            // Backward compatibility: plaintext/base64 written by older builds.
+        }
         let bytes = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, cipher) {
             Ok(b) => b,
             Err(_) => return String::new(),
@@ -441,7 +505,7 @@ fn dpapi_unprotect(cipher: &[u8]) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn dpapi_protect(plain: &[u8]) -> Result<Vec<u8>, String> {
     Ok(plain.to_vec())
 }
@@ -451,17 +515,75 @@ fn dpapi_unprotect(cipher: &[u8]) -> Result<Vec<u8>, String> {
     Ok(cipher.to_vec())
 }
 
+// --- macOS Keychain -------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn keychain_fingerprint(plain: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    plain.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_protect(plain: &str) -> Result<String, String> {
+    use security_framework::passwords::set_generic_password;
+
+    let account = keychain_fingerprint(plain);
+    set_generic_password(KEYCHAIN_SERVICE, &account, plain.as_bytes())
+        .map_err(|e| format!("Keychain 写入失败: {}", e))?;
+    Ok(format!("{}{}", KEYCHAIN_MARKER, account))
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_unprotect(account: &str) -> Result<String, String> {
+    use security_framework::passwords::get_generic_password;
+
+    if account.len() != 16 || !account.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("无效的 Keychain 引用".to_string());
+    }
+    let bytes = get_generic_password(KEYCHAIN_SERVICE, account)
+        .map_err(|e| format!("Keychain 读取失败: {}", e))?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn keychain_delete(account: &str) -> Result<(), String> {
+    use security_framework::passwords::delete_generic_password;
+    delete_generic_password(KEYCHAIN_SERVICE, account)
+        .map_err(|e| format!("Keychain 删除失败: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::data::model::Article;
 
     #[test]
-    fn dpapi_roundtrip() {
+    fn secret_roundtrip() {
         let cipher = SecretProtector::protect(Some("api-pass"));
         assert!(!cipher.is_empty());
         assert_eq!(SecretProtector::unprotect(Some(&cipher)), "api-pass");
         assert!(SecretProtector::unprotect(Some("garbage!!!")).is_empty());
+        #[cfg(target_os = "macos")]
+        if let Some(account) = cipher.strip_prefix(KEYCHAIN_MARKER) {
+            let _ = keychain_delete(account);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_store_dir_is_application_support() {
+        let store = JsonAppStore::new(None);
+        let path_str = store.path.to_string_lossy();
+        assert!(
+            path_str.contains("Library/Application Support/dews"),
+            "unexpected store path: {path_str}"
+        );
+        assert!(
+            store.path.parent().unwrap().exists(),
+            "store directory was not created: {:?}",
+            store.path.parent()
+        );
     }
 
     #[test]
@@ -475,6 +597,28 @@ mod tests {
         assert_eq!(data.accounts[0].kind, AccountKind::Local);
         assert_eq!(data.settings.summary_lines, 2);
         assert!(path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn data_without_pending_marks_still_loads() {
+        let dir = std::env::temp_dir().join(format!("ry_store_pending_{}", std::process::id()));
+        let path = dir.join("data.json");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut value = serde_json::to_value(AppData::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_marks");
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        let store = JsonAppStore::new(Some(path.clone()));
+        let data = store.load();
+        assert!(data.pending_marks.is_empty());
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(persisted.get("pending_marks").is_some());
         let _ = fs::remove_dir_all(&dir);
     }
 

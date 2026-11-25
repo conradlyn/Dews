@@ -72,6 +72,9 @@ export interface AppSettings {
   filter: string;
   feed_column_width: number;
   article_column_width: number;
+  reading_margin: number;
+  reading_line_height: number;
+  reading_indent: number;
 }
 
 export interface AppData {

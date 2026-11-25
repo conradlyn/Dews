@@ -800,6 +800,7 @@ dependencies = [
  "quick-xml 0.31.0",
  "regex",
  "reqwest 0.12.28",
+ "security-framework",
  "serde",
  "serde_json",
  "tauri",

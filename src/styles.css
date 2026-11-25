@@ -23,9 +23,15 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   --hover: #f0f4f8;
   --active: #ddf0ff;
   --active-fg: #075db3;
+  /* Neutral grey surfaces for the feed tree and list selection. */
+  --feed-bg: #f2f3f5;
+  --feed-hover: #e9ebee;
+  --feed-selected: #e1e4e8;
+  --article-selected: #e9ebee;
   --accent: #0969da;
   --accent-fg: #ffffff;
   --danger: #cf222e;
+  --splitter-shadow: rgba(15, 23, 42, 0.10);
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -47,9 +53,14 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   --hover: #252d38;
   --active: #17395c;
   --active-fg: #9ad5ff;
+  --feed-bg: #171c22;
+  --feed-hover: #242b34;
+  --feed-selected: #2c343e;
+  --article-selected: #262d36;
   --accent: #4493f8;
   --accent-fg: #ffffff;
   --danger: #f85149;
+  --splitter-shadow: rgba(0, 0, 0, 0.42);
 }
 
 /* ---------- toolbar ---------- */
@@ -224,12 +235,15 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   flex: 0 0 auto;
 }
 
-.feed-pane { width: var(--feed-width, 266px); border-right: 1px solid var(--border-soft); }
-.article-pane { width: var(--article-width, 404px); border-right: 1px solid var(--border-soft); }
+.feed-pane {
+  width: var(--feed-width, 266px);
+  background: var(--feed-bg);
+}
+.article-pane { width: var(--article-width, 404px); }
 
 .reading-pane {
   flex: 1 1 auto;
-  min-width: 320px;
+  min-width: 220px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -237,23 +251,28 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 }
 
 .splitter {
-  flex: 0 0 5px;
-  width: 5px;
+  flex: 0 0 1px;
+  width: 1px;
   cursor: col-resize;
   background: var(--border-soft);
+  /* Shadow falls onto the pane on the right; the line itself stays hair-thin. */
+  box-shadow: 2px 0 5px var(--splitter-shadow);
   position: relative;
   z-index: 2;
-  transition: background 0.16s ease, box-shadow 0.16s ease;
 }
+/* Invisible hit area so the 1px hairline is still easy to grab. */
 .splitter::after {
   content: "";
   position: absolute;
-  inset: 0 -3px;
+  inset: 0 -4px;
 }
 .splitter:hover, .splitter.dragging {
   background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: 2px 0 7px var(--splitter-shadow);
 }
+/* Right after a drag ends, keep the pointer a normal arrow until the user
+   actually moves the mouse again; only then show the col-resize affordance. */
+body.splitter-idle .splitter { cursor: default !important; }
 
 .pane-head {
   flex: 0 0 auto;
@@ -285,9 +304,48 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .segmented button:hover { background: var(--hover); color: var(--fg); }
 .segmented button.on { background: var(--active); color: var(--active-fg); border-color: transparent; }
 
-.scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
-.scroll::-webkit-scrollbar { width: 9px; }
-.scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+/* Vertical scrollbars stay invisible until the pointer enters the scrollable
+   area (wheel/scroll events happen there too), then fade into view. */
+.scroll,
+.modal-body,
+.settings-nav,
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scroll::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar,
+.settings-nav::-webkit-scrollbar,
+.settings-content::-webkit-scrollbar { width: 9px; }
+.scroll::-webkit-scrollbar-track,
+.modal-body::-webkit-scrollbar-track,
+.settings-nav::-webkit-scrollbar-track,
+.settings-content::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,
+.settings-nav::-webkit-scrollbar-thumb,
+.settings-content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+.scroll:hover,
+.modal-body:hover,
+.settings-nav:hover,
+.settings-content:hover { scrollbar-color: var(--border) transparent; }
+.scroll:hover::-webkit-scrollbar-thumb,
+.modal-body:hover::-webkit-scrollbar-thumb,
+.settings-nav:hover::-webkit-scrollbar-thumb,
+.settings-content:hover::-webkit-scrollbar-thumb { background: var(--border); }
+.scroll::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover,
+.settings-nav::-webkit-scrollbar-thumb:hover,
+.settings-content::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* ---------- feed tree ---------- */
 
@@ -302,13 +360,22 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   line-height: 1.35;
   transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
 }
-.feed-row:hover { background: var(--hover); }
-.feed-row.selected { background: var(--active); border-left-color: var(--accent); color: var(--active-fg); }
+.feed-row:hover { background: var(--feed-hover); }
+.feed-row.selected { background: var(--feed-selected); border-left-color: transparent; color: var(--fg); font-weight: 650; }
 .feed-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-row .count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
 .feed-row.group { font-weight: 650; }
 .feed-row .twisty { width: 13px; color: var(--muted); font-size: 10px; text-align: center; }
 .feed-row .favicon { width: 15px; text-align: center; opacity: 0.85; }
+.feed-row .favicon.icon-img {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  object-fit: contain;
+  vertical-align: middle;
+  border-radius: 2px;
+}
 .feed-row .remove {
   visibility: hidden;
   border: 0;
@@ -343,10 +410,15 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   /* Skip layout/paint for the thousands of offscreen rows. */
   content-visibility: auto;
   contain-intrinsic-size: auto 88px;
-  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
 }
-.article-row:hover { background: var(--hover); transform: translateX(2px); }
-.article-row.selected { background: var(--active); border-left-color: var(--accent); }
+.load-more {
+  padding: 14px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.article-row.selected { background: var(--article-selected); border-left-color: transparent; }
 .article-row.read .title { color: var(--muted); font-weight: 500; }
 .article-row .body { flex: 1; min-width: 0; }
 .article-row .title {
@@ -475,6 +547,31 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   align-items: center;
 }
 .modal-body { padding: 16px 18px; overflow-y: auto; }
+/* Settings: left category nav + right settings pane. */
+.settings-body { display: flex; padding: 0; overflow: hidden; min-height: 420px; }
+.settings-nav {
+  flex: 0 0 150px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--pane-bg);
+  padding: 10px 8px;
+  overflow-y: auto;
+}
+.settings-nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 11px;
+  margin-bottom: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.settings-nav button:hover { background: var(--hover); color: var(--fg); }
+.settings-nav button.on { background: var(--active); color: var(--fg); font-weight: 650; }
+.settings-content { flex: 1; min-width: 0; padding: 18px; overflow-y: auto; }
 .modal-foot {
   padding: 12px 18px;
   border-top: 1px solid var(--border-soft);
@@ -514,6 +611,20 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   margin-top: 4px;
 }
 .group-title:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.form-grid .field-row.manage-list { flex-direction: column; align-items: stretch; width: 100%; }
+.manage-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+.manage-row > input.grow { flex: 1; min-width: 0; }
+.manage-row > .manage-feed-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.manage-row select { flex: 0 0 auto; width: 150px; }
+.manage-row .tool-btn.icon { padding: 0 8px; }
 
 .account-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
 .account-item {

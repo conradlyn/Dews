@@ -1,6 +1,7 @@
 //! Enumerate fonts installed on the machine for the three font pickers.
 //! Windows keeps the human-readable family names in the registry Fonts key;
 //! HKLM covers system fonts, HKCU covers per-user installed fonts.
+//! macOS walks the standard font directories and uses file stems as family names.
 
 /// Fallback list used when the registry cannot be read (or on non-Windows).
 pub fn fallback_fonts() -> Vec<String> {
@@ -30,6 +31,7 @@ pub fn fallback_fonts() -> Vec<String> {
     .collect()
 }
 
+#[cfg(windows)]
 fn tidy(raw: &str) -> Option<String> {
     let mut name = raw.trim();
     if name.is_empty() {
@@ -120,6 +122,38 @@ fn from_key(root: isize, subkey: &str) -> Vec<String> {
     result
 }
 
+#[cfg(target_os = "macos")]
+fn from_directories() -> Vec<String> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let mut dirs = vec![
+        PathBuf::from("/System/Library/Fonts"),
+        PathBuf::from("/Library/Fonts"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join("Library/Fonts"));
+    }
+
+    let mut names = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+            if !matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "dfont") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if !stem.is_empty() && stem.len() <= 120 {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
 pub fn system_fonts() -> Vec<String> {
     let mut fonts = Vec::new();
     #[cfg(windows)]
@@ -128,6 +162,8 @@ pub fn system_fonts() -> Vec<String> {
         fonts.extend(from_key(0, FONTS_KEY));
         fonts.extend(from_key(1, FONTS_KEY));
     }
+    #[cfg(target_os = "macos")]
+    fonts.extend(from_directories());
     fonts.extend(fallback_fonts());
     fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     fonts.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -144,6 +180,9 @@ mod tests {
         assert!(fonts.iter().any(|f| f == "Microsoft YaHei"));
         assert!(fonts.iter().any(|f| f == "SimSun"));
         assert!(fonts.windows(2).all(|w| w[0] != w[1]));
+        #[cfg(windows)]
         assert!(tidy("Arial (TrueType)").is_some());
+        #[cfg(target_os = "macos")]
+        assert!(fonts.iter().any(|f| f == "PingFang SC"));
     }
 }
