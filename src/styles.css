@@ -30,7 +30,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   --article-selected: #e9ebee;
   --settings-nav-bg: #f2f3f5;
   --settings-nav-hover: #e9ebee;
-  --settings-board-bg: #e1e4e8;
+  --settings-board-bg: #ffffff;
   /* Universal solid-grey button palette (no alpha). */
   --btn-bg: #f1f2f4;
   --btn-bg-hover: #e2e5e9;
@@ -71,7 +71,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   --article-selected: #262d36;
   --settings-nav-bg: #171c22;
   --settings-nav-hover: #242b34;
-  --settings-board-bg: #2c343e;
+  --settings-board-bg: #15191f;
   --btn-bg: #262d36;
   --btn-bg-hover: #343d48;
   --btn-bg-active: #404a57;
@@ -658,14 +658,17 @@ body.splitter-idle .splitter { cursor: default !important; }
    right. The active tab shares the detail pane colour so both read as one
    continuous surface. */
 .settings-body {
+  flex: 0 0 auto;
   display: flex;
+  height: 560px;
+  max-height: calc(86vh - 112px);
   padding: 0;
   overflow: hidden;
-  min-height: 420px;
   background: var(--settings-nav-bg);
 }
 .settings-nav {
   flex: 0 0 150px;
+  height: 100%;
   background: var(--settings-nav-bg);
   padding: 0;
   overflow-y: auto;
@@ -696,6 +699,7 @@ body.splitter-idle .splitter { cursor: default !important; }
 .settings-content {
   flex: 1;
   min-width: 0;
+  height: 100%;
   padding: 18px;
   overflow-y: auto;
   background: var(--settings-board-bg);

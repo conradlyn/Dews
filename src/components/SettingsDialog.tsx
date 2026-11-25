@@ -6,7 +6,7 @@ type Category = "appearance" | "sync" | "data";
 
 const CATEGORIES: { id: Category; label: string }[] = [
   { id: "appearance", label: "外观与字体" },
-  { id: "sync", label: "同步与筛选" },
+  { id: "sync", label: "账户与同步" },
   { id: "data", label: "导入与导出" },
 ];
 
