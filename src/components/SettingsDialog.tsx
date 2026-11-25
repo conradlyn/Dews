@@ -138,10 +138,13 @@ export default function SettingsDialog({
           <button className="tool-btn icon" onClick={onClose} title="关闭">×</button>
         </div>
         <div className="modal-body settings-body">
-          <nav className="settings-nav">
+          <nav className="settings-nav" role="tablist" aria-label="设置分类">
             {CATEGORIES.map((c) => (
               <button
                 key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={category === c.id}
                 className={category === c.id ? "on" : ""}
                 onClick={() => setCategory(c.id)}
               >
@@ -149,7 +152,7 @@ export default function SettingsDialog({
               </button>
             ))}
           </nav>
-          <div className="settings-content">
+          <div className="settings-content" role="tabpanel">
             <div className="form-grid">
               {category === "appearance" && (
                 <>
