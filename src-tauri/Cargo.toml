@@ -1,6 +1,6 @@
 [package]
 name = "dews"
-version = "0.1.0"
+version = "1.0.0"
 description = "dews — 桌面 RSS 阅读器"
 authors = ["you"]
 edition = "2024"

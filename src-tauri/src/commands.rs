@@ -773,7 +773,7 @@ pub async fn mark_articles_read(
 
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("dews/0.1 (+desktop RSS reader)")
+        .user_agent("dews/1.0 (+desktop RSS reader)")
         .timeout(std::time::Duration::from_secs(30))
         .gzip(true)
         .deflate(true)
