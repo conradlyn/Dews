@@ -18,14 +18,39 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [failedIcons, setFailedIcons] = useState<Set<string>>(new Set());
 
-  const faviconUrl = (feed: (typeof data.feeds)[number]): string | null => {
-    const raw = feed.website || feed.url;
-    if (!raw) return null;
-    try {
-      return `${new URL(raw).origin}/favicon.ico`;
-    } catch {
-      return null;
+  // FreshRSS subscription data often has no website field and feeds are
+  // identified as "feed/2". Article links still carry the real site origin,
+  // so derive one per feed as a fallback for favicon lookup.
+  const siteOriginByFeed = useMemo(() => {
+    const needed = new Set(data.feeds.map((f) => f.id));
+    const map = new Map<string, string>();
+    for (const article of data.articles) {
+      if (needed.size === 0) break;
+      if (!needed.has(article.feed_id) || !article.link) continue;
+      try {
+        const url = new URL(article.link);
+        if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+        map.set(article.feed_id, url.origin);
+        needed.delete(article.feed_id);
+      } catch {
+        // Ignore malformed article links.
+      }
     }
+    return map;
+  }, [data.articles, data.feeds]);
+
+  const faviconUrl = (feed: (typeof data.feeds)[number]): string | null => {
+    for (const raw of [feed.website, feed.url, siteOriginByFeed.get(feed.id)]) {
+      if (!raw) continue;
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+        return `${url.origin}/favicon.ico`;
+      } catch {
+        // Try the next candidate.
+      }
+    }
+    return null;
   };
 
   const unreadByFeed = useMemo(() => {

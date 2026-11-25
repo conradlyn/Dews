@@ -194,7 +194,13 @@ impl GoogleReaderClient {
                 result.push(GReaderSubscription {
                     stream_id: id.to_string(),
                     title: json_str(item, "title").unwrap_or(id).to_string(),
-                    website: json_str(item, "website").unwrap_or("").to_string(),
+                    // FreshRSS often omits `website`; `htmlUrl` (and finally
+                    // `feedUrl`) still carries a usable site origin.
+                    website: json_str(item, "website")
+                        .or_else(|| json_str(item, "htmlUrl"))
+                        .or_else(|| json_str(item, "feedUrl"))
+                        .unwrap_or("")
+                        .to_string(),
                     category_label: category,
                 });
             }

@@ -77,7 +77,7 @@ fn mock_server(port: u16, seen: Seen) -> thread::JoinHandle<()> {
                         (
                             200,
                             "application/json",
-                            r#"{"subscriptions":[{"id":"feed/42","title":"测试订阅","website":"https://example.com","categories":[{"id":"user/-/label/科技","label":"科技"}]}]}"#.to_string(),
+                            r#"{"subscriptions":[{"id":"feed/42","title":"测试订阅","htmlUrl":"https://example.com","categories":[{"id":"user/-/label/科技","label":"科技"}]}]}"#.to_string(),
                         )
                     }
                     "/api/greader.php/reader/api/0/stream/contents/feed/42" => {
@@ -142,6 +142,7 @@ async fn freshrss_protocol_end_to_end() {
     let subs = client.get_subscriptions().await.expect("订阅列表解析");
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].stream_id, "feed/42");
+    assert_eq!(subs[0].website, "https://example.com");
     assert_eq!(subs[0].category_label.as_deref(), Some("科技"));
 
     // 3. Stream contents + read state
