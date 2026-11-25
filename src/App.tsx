@@ -7,7 +7,7 @@ import Icon from "./components/icons";
 import FeedPane from "./components/FeedPane";
 import ReadingPane from "./components/ReadingPane";
 import SettingsDialog from "./components/SettingsDialog";
-import type { AppData, AppSettings, Article, Scope, SyncPlan } from "./types";
+import type { AppData, AppSettings, Article, FeedCheck, Scope, SyncPlan } from "./types";
 import "./styles.css";
 
 type Dialog = "settings" | "addFeed" | null;
@@ -38,6 +38,9 @@ export default function App() {
   const syncingRef = useRef(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [feedUrl, setFeedUrl] = useState("");
+  const [feedGroupId, setFeedGroupId] = useState("");
+  const [feedCheck, setFeedCheck] = useState<{ url: string; result: FeedCheck } | null>(null);
+  const [checkingFeed, setCheckingFeed] = useState(false);
   const [confirmFeedId, setConfirmFeedId] = useState<string | null>(null);
   // All splitter drag state lives in refs so no re-render can tear down the
   // active drag. `dragging` only drives the visual highlight.
@@ -537,13 +540,41 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [data?.settings.sync_interval_minutes, runSync]);
 
+  const openAddFeed = () => {
+    const active = data?.accounts.find((a) => a.is_active);
+    const firstGroup = data?.groups.find((g) => g.account_id === active?.id);
+    setFeedGroupId(firstGroup?.id ?? "");
+    setFeedCheck(null);
+    setDialog("addFeed");
+  };
+
+  const verifyFeedUrl = async (): Promise<FeedCheck> => {
+    const url = feedUrl.trim();
+    if (!url) throw new Error("请输入订阅地址。");
+    setCheckingFeed(true);
+    try {
+      const result = await api.checkFeed(url);
+      setFeedCheck({ url, result });
+      return result;
+    } finally {
+      setCheckingFeed(false);
+    }
+  };
+
   const submitFeed = async () => {
-    if (!feedUrl.trim()) return;
+    const url = feedUrl.trim();
+    if (!url || busy || checkingFeed) return;
     setBusy(true);
     try {
-      const message = await api.addFeed(feedUrl);
+      // Re-validate on submit even if the user never pressed "验证连接",
+      // unless the exact same URL was already checked successfully.
+      const check =
+        feedCheck?.url === url ? feedCheck.result : await api.checkFeed(url);
+      if (feedCheck?.url !== url) setFeedCheck({ url, result: check });
+      const message = await api.addFeed(url, feedGroupId || null);
       notify(message);
       setFeedUrl("");
+      setFeedCheck(null);
       setDialog(null);
       await refresh();
     } catch (e) {
@@ -598,6 +629,8 @@ export default function App() {
   }
 
   const settings = data.settings;
+  const activeAccount = data.accounts.find((a) => a.is_active) ?? null;
+  const activeGroups = data.groups.filter((g) => g.account_id === activeAccount?.id);
   const compactButtons = settings.button_style === "icon";
   const shellClass = `app-shell${settings.dark_theme ? " dark" : ""}`;
   const workspaceStyle = {
@@ -614,7 +647,7 @@ export default function App() {
         </div>
         <button
           className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
-          onClick={() => setDialog("addFeed")}
+          onClick={openAddFeed}
           title="添加订阅"
         >
           <Icon name="add-feed" size={14} />
@@ -642,7 +675,7 @@ export default function App() {
         />
         <div className="toolbar-spacer" />
         <span className="account-chip">
-          {data.accounts.find((a) => a.is_active)?.name || "本地账户"}
+          {activeAccount?.name || "本地账户"}
         </span>
         <button
           className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
@@ -774,32 +807,73 @@ export default function App() {
           <div className="modal narrow" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <span>添加订阅</span>
-              <button className="tool-btn icon" onClick={() => setDialog(null)}>×</button>
+              <button className="modal-close" onClick={() => setDialog(null)}>×</button>
             </div>
             <div className="modal-body">
               <div className="form-grid">
                 <label htmlFor="feed-url">订阅地址</label>
-                <input
-                  id="feed-url"
-                  className="grow"
-                  type="text"
-                  autoFocus
-                  placeholder="https://example.com/feed.xml"
-                  value={feedUrl}
-                  onChange={(e) => setFeedUrl(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void submitFeed();
-                  }}
-                />
+                <div className="field-row">
+                  <input
+                    id="feed-url"
+                    className="grow"
+                    type="text"
+                    autoFocus
+                    placeholder="https://example.com/feed.xml"
+                    value={feedUrl}
+                    onChange={(e) => {
+                      setFeedUrl(e.target.value);
+                      setFeedCheck(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitFeed();
+                    }}
+                  />
+                  <button
+                    className="tool-btn"
+                    disabled={!feedUrl.trim() || busy || checkingFeed}
+                    onClick={() => {
+                      void verifyFeedUrl()
+                        .then((check) => notify(`连接正常：${check.title}`))
+                        .catch((e) => notify(String(e), true));
+                    }}
+                  >
+                    {checkingFeed ? "验证中…" : "验证连接"}
+                  </button>
+                </div>
+                <label htmlFor="feed-group">
+                  {activeAccount?.kind === "Local" ? "分类" : "远端分类"}
+                </label>
+                <select
+                  id="feed-group"
+                  value={feedGroupId}
+                  onChange={(e) => setFeedGroupId(e.target.value)}
+                >
+                  <option value="">未分类</option>
+                  {activeGroups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  ))}
+                </select>
               </div>
+              {feedCheck?.url === feedUrl.trim() && (
+                <p className="feed-check ok">
+                  ✓ {feedCheck.result.title}：{feedCheck.result.message}
+                </p>
+              )}
               <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6 }}>
-                本地账户直接抓取 RSS / Atom；FreshRSS 账户会通过 Google Reader API 订阅。
+                添加前会验证订阅地址与当前账户连接。
+                {activeAccount?.kind === "Local"
+                  ? "本地账户直接抓取 RSS / Atom。"
+                  : `当前账户 ${activeAccount?.name ?? ""}：订阅将在下次同步时写入远端服务器，所选分类会一并创建。`}
                 也可以导入 OPML 批量添加。
               </p>
             </div>
             <div className="modal-foot">
               <button className="tool-btn" onClick={() => setDialog(null)}>取消</button>
-              <button className="tool-btn primary" disabled={busy} onClick={() => void submitFeed()}>
+              <button
+                className="tool-btn primary"
+                disabled={busy || checkingFeed}
+                onClick={() => void submitFeed()}
+              >
                 添加
               </button>
             </div>

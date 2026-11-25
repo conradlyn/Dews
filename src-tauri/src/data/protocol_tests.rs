@@ -99,10 +99,21 @@ fn mock_server(port: u16, seen: Seen) -> thread::JoinHandle<()> {
                         (200, "application/json", r#"{"numResults":1,"streamId":"feed/43","streamName":"新订阅"}"#.to_string())
                     }
                     "/api/greader.php/reader/api/0/subscription/edit" => {
-                        assert!(body.contains("ac=unsubscribe"), "退订走 subscription/edit");
-                        assert!(body.contains("s=feed%2F43"), "退订携带 streamId");
-                        assert!(body.contains(&format!("T={EXPECTED_TOKEN}")), "退订携带 token");
-                        (200, "text/plain", "OK".to_string())
+                        assert!(body.contains("s=feed%2F43"), "订阅编辑携带 streamId");
+                        assert!(
+                            body.contains(&format!("T={EXPECTED_TOKEN}")),
+                            "订阅编辑携带 token"
+                        );
+                        if body.contains("ac=unsubscribe") {
+                            (200, "text/plain", "OK".to_string())
+                        } else {
+                            assert!(body.contains("ac=edit"), "分类编辑使用 ac=edit");
+                            assert!(
+                                body.contains("a=user%2F-%2Flabel%2F%E7%A7%91%E6%8A%80"),
+                                "分类写入为 user/-/label/科技：{body}"
+                            );
+                            (200, "text/plain", "OK".to_string())
+                        }
                     }
                     _ => (400, "text/plain", "Bad Request!".to_string()),
                 }
@@ -165,10 +176,16 @@ async fn freshrss_protocol_end_to_end() {
         .expect("SubscribeAsync 成功");
     assert_eq!(stream_id.as_deref(), Some("feed/43"));
 
-    // 6. Unsubscribe
+    // 6. Assign the new subscription to a server-side category
+    client
+        .set_subscription_category("feed/43", "科技")
+        .await
+        .expect("SetSubscriptionCategoryAsync 成功");
+
+    // 7. Unsubscribe
     client.unsubscribe("feed/43").await.expect("UnsubscribeAsync 成功");
 
-    // 7. No legacy paths were requested
+    // 8. No legacy paths were requested
     let paths = seen.lock().unwrap().clone();
     assert!(!paths.iter().any(|p| p == "/api/greader.php/subscription/list"
         || p == "/api/greader.php/editTag"

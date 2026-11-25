@@ -8,6 +8,7 @@
 
 use crate::data::model::{
     Account, AccountKind, AppData, AppSettings, Feed, FeedGroup, PendingMark,
+    PendingSubscription,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -44,6 +45,7 @@ struct DataMeta<'a> {
     articles: Vec<ArticleMeta<'a>>,
     settings: &'a AppSettings,
     pending_marks: &'a [PendingMark],
+    pending_subscriptions: &'a [PendingSubscription],
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -285,6 +287,7 @@ impl JsonAppStore {
                 .collect(),
             settings: &data.settings,
             pending_marks: &data.pending_marks,
+            pending_subscriptions: &data.pending_subscriptions,
         };
         atomic_write(&self.path, |w| serde_json::to_writer(w, &view).map_err(Into::into))
     }
@@ -633,12 +636,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut value = serde_json::to_value(AppData::default()).unwrap();
-        let settings = value
-            .as_object_mut()
-            .unwrap()
-            .remove("pending_marks")
-            .is_some();
-        assert!(settings);
+        let obj = value.as_object_mut().unwrap();
+        let old_queues = obj.remove("pending_marks").is_some()
+            && obj.remove("pending_subscriptions").is_some();
+        assert!(old_queues);
         value
             .as_object_mut()
             .unwrap()
@@ -652,10 +653,12 @@ mod tests {
         let store = JsonAppStore::new(Some(path.clone()));
         let data = store.load();
         assert!(data.pending_marks.is_empty());
+        assert!(data.pending_subscriptions.is_empty());
         assert_eq!(data.settings.button_style, "icon-text");
         let persisted: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(persisted.get("pending_marks").is_some());
+        assert!(persisted.get("pending_subscriptions").is_some());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -125,6 +125,14 @@ export interface MarkReadReport {
   pending: number;
 }
 
+export interface FeedCheck {
+  title: string;
+  website: string | null;
+  remote: boolean;
+  account_name: string;
+  message: string;
+}
+
 export type Scope =
   | { type: "all" }
   | { type: "unread" }

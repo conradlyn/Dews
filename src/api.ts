@@ -5,6 +5,7 @@ import type {
   AccountKind,
   AppData,
   AppSettings,
+  FeedCheck,
   SyncReport,
   SyncPlan,
   FeedSyncResult,
@@ -35,7 +36,9 @@ export const api = {
   syncSubscriptions: () => invoke<SyncPlan>("sync_subscriptions"),
   syncFeedArticles: (feedId: string) =>
     invoke<FeedSyncResult>("sync_feed_articles", { feedId }),
-  addFeed: (url: string) => invoke<string>("add_feed", { url }),
+  addFeed: (url: string, groupId: string | null) =>
+    invoke<string>("add_feed", { url, groupId }),
+  checkFeed: (url: string) => invoke<FeedCheck>("check_feed", { url }),
   removeFeed: (id: string) => invoke<void>("remove_feed", { id }),
   createGroup: (name: string) => invoke<void>("create_group", { name }),
   renameGroup: (id: string, name: string) => invoke<void>("rename_group", { id, name }),

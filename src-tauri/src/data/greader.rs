@@ -429,6 +429,39 @@ impl GoogleReaderClient {
         Ok(json_str(&doc, "streamId").map(str::to_string))
     }
 
+    /// Assign a subscription to a server-side category (FreshRSS folder).
+    /// Google Reader encodes folder tags as `user/-/label/<name>`; the same
+    /// endpoint also carries the CSRF token used by the other edit calls.
+    pub async fn set_subscription_category(
+        &mut self,
+        stream_id: &str,
+        category: &str,
+    ) -> Result<(), String> {
+        let label = category.trim();
+        if label.is_empty() {
+            return Ok(());
+        }
+        let token = self.get_token().await?;
+        let fields = [
+            ("s", stream_id.to_string()),
+            ("ac", "edit".to_string()),
+            ("a", format!("user/-/label/{label}")),
+            ("T", token),
+        ];
+        let url = self.api("/subscription/edit")?;
+        let response = self
+            .apply_auth(self.http.post(&url).form(&fields))?
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("设置订阅分类失败 ({status})：{}", shorten(&body)));
+        }
+        Ok(())
+    }
+
     pub async fn unsubscribe(&mut self, stream_id: &str) -> Result<(), String> {
         let token = self.get_token().await?;
         let fields = [

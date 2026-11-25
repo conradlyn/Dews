@@ -7,7 +7,8 @@ use crate::data::greader::{self, GReaderItem, GoogleReaderClient};
 use crate::data::html;
 use crate::data::images;
 use crate::data::model::{
-    Account, AccountKind, AppData, AppSettings, Article, Feed, FeedGroup, PendingMark, new_id,
+    Account, AccountKind, AppData, AppSettings, Article, Feed, FeedGroup, PendingMark,
+    PendingSubscription, new_id,
 };
 use crate::data::opml;
 use crate::data::rss::{self, ParsedFeed};
@@ -99,6 +100,16 @@ pub struct FeedSyncResult {
     pub articles: usize,
     pub total: usize,
     pub error: Option<String>,
+}
+
+/// Result of the preflight check in the "add feed" dialog.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedCheck {
+    pub title: String,
+    pub website: Option<String>,
+    pub remote: bool,
+    pub account_name: String,
+    pub message: String,
 }
 
 /// Lightweight article row sent to the UI. Article bodies stay in Rust:
@@ -521,6 +532,120 @@ async fn flush_pending_for_account(state: &AppState, account: &Account) -> Resul
     }
 }
 
+fn pending_subscription_ids(data: &AppData, account_id: i32) -> HashSet<String> {
+    data.pending_subscriptions
+        .iter()
+        .filter(|p| p.account_id == account_id)
+        .map(|p| p.feed_id.clone())
+        .collect()
+}
+
+/// Category label to write to a FreshRSS / Google Reader server. Local groups
+/// are private to the local account and must never be pushed remotely.
+fn category_label_for(
+    data: &AppData,
+    account: &Account,
+    group_id: Option<&str>,
+) -> Option<String> {
+    if account.kind == AccountKind::Local {
+        return None;
+    }
+    let group_id = group_id?;
+    data.groups
+        .iter()
+        .find(|g| g.id == group_id && g.account_id == account.id)
+        .map(|g| g.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// Push locally added subscriptions to a remote account. One queue entry that
+/// fails does not block the others; the failed entry stays queued for the next
+/// sync, and its local feed is protected from server-side cleanup.
+async fn flush_pending_subscriptions_for_account(
+    state: &AppState,
+    account: &Account,
+) -> Result<(), String> {
+    if account.kind == AccountKind::Local || !state.remote_ready(account.id) {
+        return Ok(());
+    }
+    let pending: Vec<PendingSubscription> = {
+        let data = state.lock()?;
+        data.pending_subscriptions
+            .iter()
+            .filter(|p| p.account_id == account.id)
+            .cloned()
+            .collect()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let outcome: Result<(), String> = async {
+        let mut client =
+            GoogleReaderClient::with_timeout(account.clone(), Duration::from_secs(12))?;
+        let mut processed: Vec<PendingSubscription> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        for item in pending {
+            let one: Result<(), String> = async {
+                let still_local = {
+                    let data = state.lock()?;
+                    data.feeds.iter().any(|f| f.id == item.feed_id)
+                };
+                if !still_local {
+                    // The feed was deleted locally before the push happened.
+                    return Ok(());
+                }
+                let stream_id = client
+                    .subscribe(&item.url)
+                    .await?
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "服务器未返回订阅 ID".to_string())?;
+                if let Some(label) = item.category_label.as_deref() {
+                    client.set_subscription_category(&stream_id, label).await?;
+                }
+                let mut data = state.lock()?;
+                if let Some(feed) = data.feeds.iter_mut().find(|f| f.id == item.feed_id) {
+                    feed.remote_id = stream_id;
+                }
+                Ok(())
+            }
+            .await;
+            match one {
+                Ok(()) => processed.push(item),
+                Err(e) => errors.push(format!("{}：{e}", item.url)),
+            }
+        }
+        if !processed.is_empty() {
+            let mut data = state.lock()?;
+            data.pending_subscriptions.retain(|p| {
+                !processed.iter().any(|done| {
+                    done.feed_id == p.feed_id
+                        && done.url == p.url
+                        && done.category_label == p.category_label
+                })
+            });
+            state.persist(&data)?;
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("；"))
+        }
+    }
+    .await;
+
+    match outcome {
+        Ok(()) => {
+            state.note_remote_success(account.id);
+            Ok(())
+        }
+        Err(e) => {
+            state.note_remote_failure(account.id);
+            Err(e)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn mark_article(
     id: String,
@@ -797,7 +922,12 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
             continue;
         }
 
-        // Push any locally queued read/star changes first. If the remote is
+        // Push locally added subscriptions first so the server list below is
+        // authoritative and does not delete feeds the user just added offline.
+        if let Err(e) = flush_pending_subscriptions_for_account(state, &account).await {
+            plan.errors.push(format!("{}：待推送订阅失败：{e}", account.name));
+        }
+        // Push any locally queued read/star changes. If the remote is
         // unavailable, report it once here instead of on every article click.
         if let Err(e) = flush_pending_for_account(state, &account).await {
             plan.errors.push(format!("{}：待同步阅读状态推送失败：{e}", account.name));
@@ -852,9 +982,20 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                 } else {
                     Some(sub.website.clone())
                 };
-                if let Some(feed) = data.feeds.iter_mut().find(|f| f.id == id) {
+                // A feed added locally keeps its id and articles until the
+                // subscription is pushed; after the push it is recognized by
+                // its freshly assigned remote id and updated in place.
+                let existing = data.feeds.iter().position(|f| {
+                    f.id == id
+                        || (f.account_id == account.id
+                            && !f.remote_id.is_empty()
+                            && f.remote_id == sub.stream_id)
+                });
+                if let Some(pos) = existing {
+                    let feed = &mut data.feeds[pos];
                     feed.title = sub.title.clone();
                     feed.url = sub.stream_id.clone();
+                    feed.remote_id = sub.stream_id.clone();
                     feed.website = website;
                     feed.group_id = group_id;
                     feed.last_synced = Some(now.clone());
@@ -873,19 +1014,26 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                     });
                 }
             }
-            // Remove feeds unsubscribed on the server, together with their articles.
-            let live_ids: Vec<String> = subscriptions
+            // Remove feeds unsubscribed on the server, together with their
+            // articles. Locally added feeds whose remote push failed stay put,
+            // otherwise a transient outage would delete the user's new feed.
+            let live_ids: HashSet<String> = subscriptions
                 .iter()
                 .map(|s| format!("gr{}:{}", account.id, s.stream_id))
                 .collect();
+            let pending_feeds = pending_subscription_ids(&data, account.id);
             let removed: Vec<String> = data
                 .feeds
                 .iter()
-                .filter(|f| f.account_id == account.id && !live_ids.contains(&f.id))
+                .filter(|f| {
+                    f.account_id == account.id
+                        && !live_ids.contains(&f.id)
+                        && !live_ids.contains(&format!("gr{}:{}", account.id, f.remote_id))
+                        && !pending_feeds.contains(&f.id)
+                })
                 .map(|f| f.id.clone())
                 .collect();
-            data.feeds
-                .retain(|f| f.account_id != account.id || live_ids.contains(&f.id));
+            data.feeds.retain(|f| !removed.contains(&f.id));
             data.articles.retain(|a| !removed.contains(&a.feed_id));
             let live_articles: HashSet<String> =
                 data.articles.iter().map(|a| a.id.clone()).collect();
@@ -1101,7 +1249,11 @@ pub async fn sync_all(state: State<'_, AppState>) -> Result<SyncReport, String> 
     Ok(report)
 }
 
-async fn add_feed_inner(url: &str, state: &AppState) -> Result<String, String> {
+async fn add_feed_inner(
+    url: &str,
+    group_id: Option<String>,
+    state: &AppState,
+) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("请输入订阅地址。".to_string());
@@ -1113,80 +1265,141 @@ async fn add_feed_inner(url: &str, state: &AppState) -> Result<String, String> {
         .find(|a| a.is_active)
         .cloned()
         .ok_or_else(|| "没有可用的活动账户".to_string())?;
+    let remote = account.kind != AccountKind::Local;
 
-    if account.kind == AccountKind::Local {
-        let client = http_client()?;
-        let parsed = fetch_rss(&client, url).await?;
-        let title = parsed.title.clone();
-        let website = parsed.site_url.clone();
-        // Only groups owned by this account may hold its feeds. Taking the
-        // global first group could assign a local feed to a remote group.
-        let default_group = {
-            let data = state.lock()?;
-            data.groups
-                .iter()
-                .find(|g| g.account_id == account.id)
-                .map(|g| g.id.clone())
-        };
-        let feed = Feed {
-            id: new_id(),
-            account_id: account.id,
-            remote_id: String::new(),
-            title: title.clone(),
-            url: url.to_string(),
-            website,
-            group_id: default_group,
-            last_synced: Some(chrono::Utc::now().to_rfc3339()),
-            failure_count: 0,
-        };
-        let articles: Vec<Article> = parsed
-            .items
+    let (group_id, category_label) = {
+        let data = state.lock()?;
+        if data
+            .feeds
             .iter()
-            .map(|item| article_from_parsed(account.id, &feed, item))
-            .collect();
-        let mut data = state.lock()?;
-        if data.feeds.iter().any(|f| f.url == url && f.account_id == account.id) {
+            .any(|f| f.account_id == account.id && f.url == url)
+        {
             return Err("该订阅源已存在。".to_string());
         }
-        data.feeds.push(feed);
-        for article in articles {
-            upsert_article(&mut data, article);
-        }
-        state.persist(&data)?;
-        Ok(format!("已添加：{title}"))
-    } else {
-        let mut client = GoogleReaderClient::new(account.clone())?;
-        let stream_id = client.subscribe(url).await?;
-        // Refresh the whole subscription tree, then pull every page of the
-        // newly subscribed feed so local state matches the server exactly.
-        sync_subscriptions_inner(state).await?;
-        let feed_id = {
-            let data = state.lock()?;
-            data.feeds
+        let chosen = group_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if let Some(id) = chosen {
+            if !data
+                .groups
                 .iter()
-                .find(|f| {
-                    f.account_id == account.id
-                        && stream_id
-                            .as_deref()
-                            .map(|s| f.remote_id == s)
-                            .unwrap_or(false)
-                })
-                .map(|f| f.id.clone())
-        };
-        let mut added = 0;
-        if let Some(id) = feed_id {
-            added = sync_feed_inner(state, &id).await.articles;
-        }
-        Ok(format!(
-            "已订阅：{}{}",
-            stream_id.unwrap_or_else(|| url.to_string()),
-            if added > 0 {
-                format!("（{added} 篇新文章）")
-            } else {
-                String::new()
+                .any(|g| g.id == id && g.account_id == account.id)
+            {
+                return Err("所选分类不属于当前账户。".to_string());
             }
-        ))
+        }
+        // Only groups owned by this account may hold its feeds; taking the
+        // global first group could assign a local feed to a remote group.
+        let group_id = chosen
+            .map(str::to_string)
+            .or_else(|| {
+                data.groups
+                    .iter()
+                    .find(|g| g.account_id == account.id)
+                    .map(|g| g.id.clone())
+            });
+        let category_label = category_label_for(&data, &account, group_id.as_deref());
+        (group_id, category_label)
+    };
+
+    // Preflight: a bad URL must fail here, before anything is stored. Remote
+    // accounts additionally verify that the FreshRSS / GReader API is usable.
+    let client = http_client()?;
+    let parsed = fetch_rss(&client, url).await?;
+    if remote {
+        let mut remote_client = GoogleReaderClient::new(account.clone())?;
+        remote_client.validate().await?;
+        state.note_remote_success(account.id);
     }
+
+    let title = parsed.title.clone();
+    let website = parsed.site_url.clone();
+    let feed = Feed {
+        id: new_id(),
+        account_id: account.id,
+        remote_id: String::new(),
+        title: title.clone(),
+        url: url.to_string(),
+        website,
+        group_id,
+        last_synced: Some(chrono::Utc::now().to_rfc3339()),
+        failure_count: 0,
+    };
+    let articles: Vec<Article> = parsed
+        .items
+        .iter()
+        .map(|item| article_from_parsed(account.id, &feed, item))
+        .collect();
+
+    let mut data = state.lock()?;
+    data.feeds.push(feed.clone());
+    for article in articles {
+        upsert_article(&mut data, article);
+    }
+    if remote {
+        data.pending_subscriptions.push(PendingSubscription {
+            feed_id: feed.id.clone(),
+            account_id: account.id,
+            url: url.to_string(),
+            category_label,
+        });
+    }
+    state.persist(&data)?;
+    if remote {
+        Ok(format!(
+            "已添加：{title}（将在下次同步时写入 {}）",
+            account.display_name()
+        ))
+    } else {
+        Ok(format!("已添加：{title}"))
+    }
+}
+
+/// Preflight used by the add-feed dialog. Rejects unreachable feeds, invalid
+/// RSS/Atom payloads, duplicates and unusable remote accounts before the user
+/// commits the subscription.
+#[tauri::command]
+pub async fn check_feed(url: String, state: State<'_, AppState>) -> Result<FeedCheck, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("请输入订阅地址。".to_string());
+    }
+    let account = state
+        .lock()?
+        .accounts
+        .iter()
+        .find(|a| a.is_active)
+        .cloned()
+        .ok_or_else(|| "没有可用的活动账户".to_string())?;
+    if state
+        .lock()?
+        .feeds
+        .iter()
+        .any(|f| f.account_id == account.id && f.url == url)
+    {
+        return Err("该订阅源已存在。".to_string());
+    }
+    let client = http_client()?;
+    let parsed = fetch_rss(&client, url).await?;
+    let remote = account.kind != AccountKind::Local;
+    if remote {
+        let mut remote_client = GoogleReaderClient::new(account.clone())?;
+        remote_client.validate().await?;
+        state.note_remote_success(account.id);
+    }
+    let message = if remote {
+        format!("可连接；添加后将在下次同步时写入 {}", account.display_name())
+    } else {
+        "可连接；已读取到有效的 RSS / Atom 订阅".to_string()
+    };
+    Ok(FeedCheck {
+        title: parsed.title,
+        website: parsed.site_url,
+        remote,
+        account_name: account.name.clone(),
+        message,
+    })
 }
 
 /// Group management is only valid for the local account. Remote (FreshRSS /
@@ -1333,8 +1546,12 @@ pub fn set_feed_group(
 }
 
 #[tauri::command]
-pub async fn add_feed(url: String, state: State<'_, AppState>) -> Result<String, String> {
-    add_feed_inner(&url, &state).await
+pub async fn add_feed(
+    url: String,
+    group_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    add_feed_inner(&url, group_id, &state).await
 }
 
 #[tauri::command]
@@ -1354,6 +1571,7 @@ pub async fn remove_feed(id: String, state: State<'_, AppState>) -> Result<(), S
         let remote_id = feed.remote_id.clone();
         data.feeds.retain(|f| f.id != id);
         data.articles.retain(|a| a.feed_id != id);
+        data.pending_subscriptions.retain(|p| p.feed_id != id);
         state.persist(&data)?;
         (account, remote_id)
     };
@@ -1372,7 +1590,7 @@ pub async fn import_opml(xml: String, state: State<'_, AppState>) -> Result<Stri
     let mut ok = 0;
     let mut errors = Vec::new();
     for sub in subscriptions {
-        match add_feed_inner(&sub.xml_url, &state).await {
+        match add_feed_inner(&sub.xml_url, None, &state).await {
             Ok(_) => ok += 1,
             Err(e) => errors.push(format!("{}：{e}", sub.title)),
         }
@@ -1480,7 +1698,8 @@ pub fn delete_account(id: i32, state: State<'_, AppState>) -> Result<Vec<Account
     data.feeds.retain(|f| f.account_id != id);
     data.articles.retain(|a| a.account_id != id);
     data.groups.retain(|g| g.account_id != id);
-    let _ = feed_ids;
+    data.pending_subscriptions
+        .retain(|p| p.account_id != id && !feed_ids.contains(&p.feed_id));
     if data.accounts.is_empty() {
         data.accounts.push(Account {
             id: 1,
@@ -1657,5 +1876,154 @@ mod tests {
         let stored = &data.articles[0];
         assert!(stored.is_read, "待推送的已读状态不被服务器刷新覆盖");
         assert!(stored.is_starred, "待推送的星标状态不被服务器刷新覆盖");
+    }
+
+    #[test]
+    fn category_label_uses_only_remote_group_names() {
+        let data = AppData {
+            groups: vec![
+                FeedGroup {
+                    id: "gr2:科技".to_string(),
+                    account_id: 2,
+                    name: "科技".to_string(),
+                },
+                FeedGroup {
+                    id: "local:1".to_string(),
+                    account_id: 1,
+                    name: "本地分类".to_string(),
+                },
+            ],
+            ..AppData::default()
+        };
+        let remote = Account {
+            id: 2,
+            kind: AccountKind::FreshRSS,
+            ..Account::default()
+        };
+        let local = Account {
+            id: 1,
+            kind: AccountKind::Local,
+            ..Account::default()
+        };
+        assert_eq!(
+            category_label_for(&data, &remote, Some("gr2:科技")).as_deref(),
+            Some("科技")
+        );
+        assert_eq!(category_label_for(&data, &remote, Some("local:1")), None);
+        assert_eq!(category_label_for(&data, &local, Some("local:1")), None);
+    }
+
+    /// Minimal FreshRSS-compatible server: login + token + quickadd + folder edit.
+    #[tokio::test]
+    async fn pending_subscription_flush_writes_remote_and_category() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let port = 18803u16;
+        let bodies: std::sync::Arc<Mutex<Vec<String>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = bodies.clone();
+        let server = thread::spawn(move || {
+            let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                let mut stream = match listener.accept() {
+                    Ok((s, _)) => s,
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                };
+                stream.set_nonblocking(false).ok();
+                let mut buf = vec![0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let first = request.lines().next().unwrap_or("");
+                let mut parts = first.split_whitespace();
+                let method = parts.next().unwrap_or("");
+                let target = parts.next().unwrap_or("");
+                let path = target.split('?').next().unwrap_or(target);
+                let body = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, b)| b.to_string())
+                    .unwrap_or_default();
+                seen.lock().unwrap().push(body.clone());
+                let response = if path.ends_with("/accounts/ClientLogin") && method == "POST" {
+                    "Auth=tester/A1B2C3\n".to_string()
+                } else if path.ends_with("/token") {
+                    "TOKEN123\n".to_string()
+                } else if path.ends_with("/subscription/quickadd") {
+                    r#"{"streamId":"feed/77","numResults":1}"#.to_string()
+                } else if path.ends_with("/subscription/edit") {
+                    "OK".to_string()
+                } else {
+                    "{}".to_string()
+                };
+                let http = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(http.as_bytes()).ok();
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("dews_queue_sub_{}", std::process::id()));
+        let store = JsonAppStore::new(Some(dir.join("data.json")));
+        let account = Account {
+            id: 3,
+            kind: AccountKind::FreshRSS,
+            name: "测试远端".to_string(),
+            endpoint: format!("http://127.0.0.1:{port}"),
+            username: "tester".to_string(),
+            password_protected: SecretProtector::protect(Some("api-pass")),
+            is_active: true,
+        };
+        let data = AppData {
+            accounts: vec![account.clone()],
+            feeds: vec![Feed {
+                id: "local-feed".to_string(),
+                account_id: 3,
+                title: "本地新增订阅".to_string(),
+                url: "https://example.com/feed.xml".to_string(),
+                ..Feed::default()
+            }],
+            pending_subscriptions: vec![PendingSubscription {
+                feed_id: "local-feed".to_string(),
+                account_id: 3,
+                url: "https://example.com/feed.xml".to_string(),
+                category_label: Some("科技".to_string()),
+            }],
+            ..AppData::default()
+        };
+        store.save(&data).unwrap();
+        let state = AppState {
+            store,
+            data: Mutex::new(data),
+            remote_backoff: Mutex::new(HashMap::new()),
+        };
+
+        flush_pending_subscriptions_for_account(&state, &account)
+            .await
+            .expect("待推送订阅应成功写入远端");
+
+        {
+            let stored = state.lock().unwrap();
+            assert!(stored.pending_subscriptions.is_empty());
+            assert_eq!(stored.feeds[0].remote_id, "feed/77");
+        }
+        let bodies = bodies.lock().unwrap().clone();
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("a=user%2F-%2Flabel%2F%E7%A7%91%E6%8A%80")),
+            "分类必须以 user/-/label/科技 写入远端：{bodies:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        server.join().ok();
     }
 }

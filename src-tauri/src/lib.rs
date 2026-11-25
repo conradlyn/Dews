@@ -21,6 +21,7 @@ pub fn run() {
             commands::sync_subscriptions,
             commands::sync_feed_articles,
             commands::add_feed,
+            commands::check_feed,
             commands::remove_feed,
             commands::create_group,
             commands::rename_group,

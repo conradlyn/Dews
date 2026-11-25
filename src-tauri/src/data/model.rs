@@ -258,6 +258,19 @@ pub struct PendingMark {
     pub updated_at: i64,
 }
 
+/// A locally added subscription that has not been written to a FreshRSS /
+/// Google Reader server yet. It is pushed at the start of the next sync so an
+/// offline add is never lost, and the local feed is kept until the push works.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingSubscription {
+    pub feed_id: String,
+    pub account_id: i32,
+    /// Original feed URL (not the server-side `feed/N` stream id).
+    pub url: String,
+    /// Server category label chosen when the feed was added locally.
+    pub category_label: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppData {
     pub accounts: Vec<Account>,
@@ -267,6 +280,8 @@ pub struct AppData {
     pub settings: AppSettings,
     #[serde(default)]
     pub pending_marks: Vec<PendingMark>,
+    #[serde(default)]
+    pub pending_subscriptions: Vec<PendingSubscription>,
 }
 
 /// 32 hex chars, equivalent to C# Guid.NewGuid().ToString("N").
