@@ -781,18 +781,62 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn fetch_rss(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
-    let body = client
-        .get(url)
+enum FeedFetch {
+    NotModified,
+    Updated {
+        parsed: ParsedFeed,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    },
+}
+
+/// Conditional GET for RSS/Atom. A 304 response means the feed has not
+/// changed since the last sync, so we skip parsing and article upserts.
+async fn fetch_rss_conditional(
+    client: &reqwest::Client,
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<FeedFetch, String> {
+    let mut request = client.get(url);
+    if let Some(tag) = etag.filter(|s| !s.trim().is_empty()) {
+        request = request.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
+    if let Some(date) = last_modified.filter(|s| !s.trim().is_empty()) {
+        request = request.header(reqwest::header::IF_MODIFIED_SINCE, date);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("请求订阅源失败：{e}"))?
         .error_for_status()
-        .map_err(|e| format!("订阅源返回错误：{e}"))?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
-    rss::parse(&body, Some(url))
+        .map_err(|e| format!("订阅源返回错误：{e}"))?;
+    if response.status().as_u16() == 304 {
+        return Ok(FeedFetch::NotModified);
+    }
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let last_modified = response
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    Ok(FeedFetch::Updated {
+        parsed: rss::parse(&body, Some(url))?,
+        etag,
+        last_modified,
+    })
+}
+
+async fn fetch_rss(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
+    match fetch_rss_conditional(client, url, None, None).await? {
+        FeedFetch::Updated { parsed, .. } => Ok(parsed),
+        FeedFetch::NotModified => Err("订阅源未发生变化，但没有可解析的内容。".to_string()),
+    }
 }
 
 fn article_from_parsed(
@@ -862,6 +906,13 @@ fn upsert_article(data: &mut AppData, article: Article) -> bool {
 }
 
 const MAX_ARTICLES_PER_FEED: usize = 5000;
+/// Re-fetch 24 hours of extra history on incremental syncs so backfilled /
+/// late-published articles are not missed.
+const INCREMENTAL_OVERLAP_SECS: i64 = 86400;
+/// Incremental syncs never delete articles. Do one full server reconciliation
+/// per day so read/star changes made on older items still converge.
+const FULL_RECONCILE_HOURS: i64 = 24;
+const MAX_INCREMENTAL_PER_FEED: usize = 1000;
 
 /// Insert or update from the server: the server's read/starred flags normally
 /// win. Articles with an unsent local mark keep that flag, and local-only
@@ -1010,6 +1061,9 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                         website,
                         group_id,
                         last_synced: Some(now.clone()),
+                        last_full_sync: None,
+                        etag: None,
+                        last_modified: None,
                         failure_count: 0,
                     });
                 }
@@ -1138,18 +1192,40 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
         if let Some(account) = account {
             if account.kind == AccountKind::Local {
                 let client = http_client()?;
-                let parsed = fetch_rss(&client, &feed.url).await?;
-                result.total = parsed.items.len();
+                let fetched = fetch_rss_conditional(
+                    &client,
+                    &feed.url,
+                    feed.etag.as_deref(),
+                    feed.last_modified.as_deref(),
+                )
+                .await?;
                 let mut data = state.lock()?;
-                for item in &parsed.items {
-                    let article = article_from_parsed(account.id, &feed, item);
-                    if upsert_article(&mut data, article) {
-                        added += 1;
+                match fetched {
+                    FeedFetch::NotModified => {
+                        // ETag/Last-Modified say nothing changed: skip parsing
+                        // and article upserts entirely.
+                    }
+                    FeedFetch::Updated {
+                        parsed,
+                        etag,
+                        last_modified,
+                    } => {
+                        result.total = parsed.items.len();
+                        for item in &parsed.items {
+                            let article = article_from_parsed(account.id, &feed, item);
+                            if upsert_article(&mut data, article) {
+                                added += 1;
+                            }
+                        }
+                        if let Some(stored) = data.feeds.iter_mut().find(|f| f.id == feed.id) {
+                            stored.title = parsed.title.clone();
+                            stored.website = parsed.site_url.clone();
+                            stored.etag = etag;
+                            stored.last_modified = last_modified;
+                        }
                     }
                 }
                 if let Some(stored) = data.feeds.iter_mut().find(|f| f.id == feed.id) {
-                    stored.title = parsed.title.clone();
-                    stored.website = parsed.site_url.clone();
                     stored.last_synced = Some(now);
                     stored.failure_count = 0;
                 }
@@ -1161,16 +1237,37 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                 } else {
                     feed.remote_id.as_str()
                 };
-                // Fetch every page of THIS feed instead of the global
-                // reading-list (which is capped and mixes feeds together).
-                let items = client
-                    .get_stream_all(stream_id, MAX_ARTICLES_PER_FEED)
-                    .await?;
+                // Fetch only the pages newer than the last sync. A full pass
+                // is kept for the first sync of a feed and once per day so
+                // server-side changes to older articles still converge.
+                let parse_ts = |value: Option<&str>| {
+                    value
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                };
+                let last_sync = parse_ts(feed.last_synced.as_deref());
+                let full_due = parse_ts(feed.last_full_sync.as_deref())
+                    .map(|last| {
+                        chrono::Utc::now().signed_duration_since(last)
+                            >= chrono::Duration::hours(FULL_RECONCILE_HOURS)
+                    })
+                    .unwrap_or(false);
+                let (items, complete) = if full_due || last_sync.is_none() {
+                    let all = client
+                        .get_stream_all(stream_id, MAX_ARTICLES_PER_FEED)
+                        .await?;
+                    let complete = all.len() < MAX_ARTICLES_PER_FEED;
+                    (all, complete)
+                } else {
+                    let cutoff = last_sync.unwrap().timestamp() - INCREMENTAL_OVERLAP_SECS;
+                    let recent = client
+                        .get_stream_since(stream_id, cutoff, MAX_INCREMENTAL_PER_FEED)
+                        .await?;
+                    (recent, false)
+                };
                 result.total = items.len();
-                // Only treat the list as authoritative when it was not cut
-                // short by the safety cap; otherwise a cleanup would delete
-                // older articles that simply were not fetched yet.
-                let complete = items.len() < MAX_ARTICLES_PER_FEED;
+                // Only a complete full pass is authoritative. Incremental
+                // results deliberately leave older articles untouched.
                 let remote_ids: std::collections::HashSet<String> =
                     items.iter().map(|item| item.id.clone()).collect();
                 let mut data = state.lock()?;
@@ -1185,7 +1282,10 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                         .retain(|a| a.feed_id != feed.id || remote_ids.contains(&a.remote_id));
                 }
                 if let Some(stored) = data.feeds.iter_mut().find(|f| f.id == feed.id) {
-                    stored.last_synced = Some(now);
+                    stored.last_synced = Some(now.clone());
+                    if complete || stored.last_full_sync.is_none() {
+                        stored.last_full_sync = Some(now);
+                    }
                     stored.failure_count = 0;
                 }
                 state.persist(&data)?;
@@ -1324,6 +1424,9 @@ async fn add_feed_inner(
         website,
         group_id,
         last_synced: Some(chrono::Utc::now().to_rfc3339()),
+        last_full_sync: None,
+        etag: None,
+        last_modified: None,
         failure_count: 0,
     };
     let articles: Vec<Article> = parsed
@@ -2024,6 +2127,79 @@ mod tests {
             "分类必须以 user/-/label/科技 写入远端：{bodies:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+        server.join().ok();
+    }
+
+    #[tokio::test]
+    async fn conditional_rss_fetch_skips_unchanged_feed() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let port = 18804u16;
+        let headers: std::sync::Arc<Mutex<Vec<String>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = headers.clone();
+        let server = thread::spawn(move || {
+            let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                let mut stream = match listener.accept() {
+                    Ok((s, _)) => s,
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                };
+                stream.set_nonblocking(false).ok();
+                let mut buf = vec![0u8; 16384];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let conditional = request
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("if-none-match:"))
+                    .unwrap_or("")
+                    .to_string();
+                seen.lock().unwrap().push(conditional.clone());
+                let response = if !conditional.is_empty() {
+                    "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                } else {
+                    let body = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>测试订阅</title><link>https://example.com</link><description>测试</description><item><title>第一篇</title><link>https://example.com/1</link><guid>1</guid></item></channel></rss>"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nETag: \"dews-test\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
+                stream.write_all(response.as_bytes()).ok();
+            }
+        });
+
+        let client = http_client().unwrap();
+        let url = format!("http://127.0.0.1:{port}/feed.xml");
+        let first = fetch_rss_conditional(&client, &url, None, None)
+            .await
+            .expect("首次抓取成功");
+        let FeedFetch::Updated { parsed, etag, .. } = first else {
+            panic!("首次抓取应返回完整订阅");
+        };
+        assert_eq!(parsed.title, "测试订阅");
+        assert_eq!(etag.as_deref(), Some("\"dews-test\""));
+
+        let second = fetch_rss_conditional(&client, &url, etag.as_deref(), None)
+            .await
+            .expect("条件请求成功");
+        assert!(matches!(second, FeedFetch::NotModified));
+        let seen = headers.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|h| h.contains("dews-test")),
+            "第二次请求必须带上 If-None-Match：{seen:?}"
+        );
         server.join().ok();
     }
 }

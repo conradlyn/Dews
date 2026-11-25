@@ -273,3 +273,76 @@ async fn stream_pagination_fetches_every_page() {
     );
     server.join().ok();
 }
+
+/// Newest-first stream where the first page already contains an item older
+/// than the cutoff. Incremental sync must stop there instead of paging on.
+fn since_mock_server(port: u16, seen: Seen) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let mut stream = match listener.accept() {
+                Ok((s, _)) => s,
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+            };
+            stream.set_nonblocking(false).ok();
+            let mut buf = vec![0u8; 16384];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                continue;
+            }
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let target = request.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("");
+            let (path, query) = target.split_once('?').unwrap_or((target, ""));
+            seen.lock().unwrap().push_back(query.to_string());
+            let body = if path.ends_with("/accounts/ClientLogin") {
+                "Auth=tester/A1B2C3\n".to_string()
+            } else if path.ends_with("/stream/contents/feed/99") && query.contains("c=page2") {
+                r#"{"items":[{"id":"old1","published":50}]}"#.to_string()
+            } else if path.ends_with("/stream/contents/feed/99") {
+                r#"{"items":[{"id":"new3","published":300},{"id":"new2","published":200},{"id":"old2","published":100}],"continuation":"page2"}"#.to_string()
+            } else {
+                "{}".to_string()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).ok();
+        }
+    })
+}
+
+#[tokio::test]
+async fn incremental_stream_stops_at_cutoff_without_extra_pages() {
+    let port = 18768;
+    let seen: Seen = Arc::new(Mutex::new(VecDeque::new()));
+    let server = since_mock_server(port, seen.clone());
+    let account = Account {
+        id: 97,
+        kind: AccountKind::FreshRSS,
+        name: "增量测试".to_string(),
+        endpoint: format!("http://127.0.0.1:{port}"),
+        username: "tester".to_string(),
+        password_protected: SecretProtector::protect(Some("api-pass")),
+        is_active: true,
+    };
+    let mut client = GoogleReaderClient::new(account).unwrap();
+    let items = client
+        .get_stream_since("feed/99", 150, 100)
+        .await
+        .expect("增量拉取成功");
+    let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, vec!["new3", "new2"]);
+    let queries = seen.lock().unwrap().clone();
+    assert!(
+        !queries.iter().any(|q| q.contains("c=page2")),
+        "遇到旧文章后不应继续翻页：{queries:?}"
+    );
+    server.join().ok();
+}

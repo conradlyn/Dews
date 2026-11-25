@@ -259,6 +259,59 @@ impl GoogleReaderClient {
         Ok(all)
     }
 
+    /// Incremental fetch: streams are ordered newest-first, so stop as soon as
+    /// an item older than `min_published` (Unix seconds) appears. A full
+    /// `get_stream_all` pass is still needed occasionally to reconcile older
+    /// read/star flags changed on the server.
+    pub async fn get_stream_since(
+        &mut self,
+        stream_id: &str,
+        min_published: i64,
+        max_items: usize,
+    ) -> Result<Vec<GReaderItem>, String> {
+        let mut all = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut continuation: Option<String> = None;
+        loop {
+            if all.len() >= max_items {
+                break;
+            }
+            let (items, next) = self
+                .get_stream_page(stream_id, 500, continuation.as_deref())
+                .await?;
+            if items.is_empty() {
+                break;
+            }
+            let mut reached_old = false;
+            let mut fresh = 0;
+            for item in items {
+                if item.published < min_published {
+                    reached_old = true;
+                    break;
+                }
+                if seen.insert(item.id.clone()) {
+                    all.push(item);
+                    fresh += 1;
+                    if all.len() >= max_items {
+                        break;
+                    }
+                }
+            }
+            if reached_old || fresh == 0 {
+                break;
+            }
+            match next {
+                Some(cursor)
+                    if !cursor.is_empty() && Some(cursor.as_str()) != continuation.as_deref() =>
+                {
+                    continuation = Some(cursor);
+                }
+                _ => break,
+            }
+        }
+        Ok(all)
+    }
+
     async fn get_stream_page(
         &mut self,
         stream_id: &str,

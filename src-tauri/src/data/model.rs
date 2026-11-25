@@ -83,6 +83,16 @@ pub struct Feed {
     pub website: Option<String>,
     pub group_id: Option<String>,
     pub last_synced: Option<String>,
+    /// Last time the full server stream was reconciled. Incremental syncs
+    /// only fetch items newer than `last_synced`; a periodic full pass still
+    /// catches read/star changes made on the server for older articles.
+    #[serde(default)]
+    pub last_full_sync: Option<String>,
+    /// Conditional-GET validators for local RSS feeds.
+    #[serde(default)]
+    pub etag: Option<String>,
+    #[serde(default)]
+    pub last_modified: Option<String>,
     pub failure_count: i32,
 }
 
@@ -97,6 +107,9 @@ impl Default for Feed {
             website: None,
             group_id: None,
             last_synced: None,
+            last_full_sync: None,
+            etag: None,
+            last_modified: None,
             failure_count: 0,
         }
     }
