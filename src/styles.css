@@ -528,18 +528,19 @@ body.splitter-idle .splitter { cursor: default !important; }
   background: var(--border-soft);
   border: 1px solid var(--border-soft);
 }
+/* The list star is a glyph toggle, not a button: no fill or border. */
 .article-row .star {
-  border: 1px solid var(--btn-border);
-  background: var(--btn-bg);
+  border: 0;
+  background: transparent;
   color: var(--faint);
-  border-radius: 5px;
+  border-radius: 0;
   cursor: pointer;
   font-size: 15px;
   align-self: flex-start;
-  padding: 1px 5px;
-  line-height: 1.1;
+  padding: 0;
+  line-height: 1;
 }
-.article-row .star:not(:disabled):hover { background: var(--btn-bg-hover); color: var(--btn-fg); }
+.article-row .star:not(:disabled):hover { color: var(--fg); background: transparent; }
 .article-row .star.on { color: #e3a008; }
 
 /* Large thumbnail: image spans the row, title/meta/snippet sit below it. */
