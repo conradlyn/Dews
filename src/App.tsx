@@ -12,6 +12,10 @@ import "./styles.css";
 
 type Dialog = "settings" | "addFeed" | null;
 
+/// Number of feeds fetched in parallel. High enough to hide per-request
+/// latency, low enough not to flood a self-hosted FreshRSS instance.
+const SYNC_CONCURRENCY = 6;
+
 type SyncStage = "subscriptions" | "articles" | "done";
 interface SyncState {
   stage: SyncStage;
@@ -476,29 +480,54 @@ export default function App() {
           articles: 0,
           errors: [...errors],
         });
-        // 订阅源与分类已经入库：先重绘最左侧栏，再开始逐源拉文章。
+        // 订阅源与分类已经入库：先重绘最左侧栏，再用有界并发拉文章。
         await refresh();
-        for (let i = 0; i < plan.feeds.length; i++) {
-          const feed = plan.feeds[i];
+        const feeds = plan.feeds;
+        let nextIndex = 0;
+        let completed = 0;
+        const active = new Set<string>();
+        const publishProgress = () => {
+          const current =
+            [...active].slice(0, 3).join("、") + (active.size > 3 ? " 等" : "");
           setSyncState((prev) =>
             prev
-              ? { ...prev, index: i + 1, current: feed.title, errors: [...errors] }
+              ? {
+                  ...prev,
+                  index: completed,
+                  current,
+                  articles: totalArticles,
+                  errors: [...errors],
+                }
               : prev,
           );
-          try {
-            const result = await api.syncFeedArticles(feed.id);
-            totalArticles += result.articles;
-            if (result.error) errors.push(`${feed.title}：${result.error}`);
-            await refresh();
-          } catch (e) {
-            errors.push(`${feed.title}：${String(e)}`);
+        };
+        const worker = async () => {
+          while (true) {
+            const index = nextIndex++;
+            if (index >= feeds.length) return;
+            const feed = feeds[index];
+            active.add(feed.title);
+            publishProgress();
+            try {
+              const result = await api.syncFeedArticles(feed.id);
+              totalArticles += result.articles;
+              if (result.error) errors.push(`${feed.title}：${result.error}`);
+            } catch (e) {
+              errors.push(`${feed.title}：${String(e)}`);
+            } finally {
+              active.delete(feed.title);
+              completed++;
+              publishProgress();
+            }
           }
-          setSyncState((prev) =>
-            prev
-              ? { ...prev, articles: totalArticles, errors: [...errors] }
-              : prev,
-          );
-        }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(SYNC_CONCURRENCY, feeds.length) },
+            () => worker(),
+          ),
+        );
+        await refresh();
         setSyncState({
           stage: "done",
           plan,

@@ -1168,13 +1168,9 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
     };
     let mut added = 0usize;
 
-    // Retry locally queued marks before the server flags are read back. If the
-    // push still fails, pending_ids keeps those local flags authoritative.
-    if let Some(account) = account.as_ref() {
-        if account.kind != AccountKind::Local {
-            let _ = flush_pending_for_account(state, account).await;
-        }
-    }
+    // Queued marks are flushed once per account in phase 1. Doing it here as
+    // well would fire duplicate edit-tag requests when feeds sync in parallel.
+    // `pending_ids` still keeps local flags authoritative if that push failed.
     let pending_ids = match state.lock() {
         Ok(data) => data
             .pending_marks
