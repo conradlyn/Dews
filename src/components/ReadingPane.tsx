@@ -52,7 +52,7 @@ function ReadingPane({
           {article.author && <span>· {article.author}</span>}
           <div className="reading-actions">
             <button
-              className="tool-btn"
+              className="tool-btn reading-action"
               disabled={fetching || !article.link}
               onClick={() => onFetchFullText(article)}
               title={article.link ? "抓取原文网页并提取正文" : "这篇文章没有原文链接"}
@@ -60,14 +60,14 @@ function ReadingPane({
               {fetching ? "获取中…" : "↧ 获取全文"}
             </button>
             <button
-              className="tool-btn"
+              className={`tool-btn reading-action${article.is_starred ? " on" : ""}`}
               onClick={() => onToggleStar(article)}
               title={article.is_starred ? "取消星标" : "加星标"}
             >
               {article.is_starred ? "★ 已星标" : "☆ 星标"}
             </button>
             <button
-              className="tool-btn primary"
+              className="tool-btn reading-action"
               disabled={!article.link}
               onClick={() => article.link && onOpenOriginal(article.link)}
               title="在浏览器中打开原文"

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
-import type { Account, AppSettings, Feed, FeedGroup } from "../types";
+import { api } from "../api";
+import type { Account, AccountKind, AppSettings, Feed, FeedGroup } from "../types";
 
 type Category = "appearance" | "sync" | "data";
 
@@ -9,10 +10,19 @@ const CATEGORIES: { id: Category; label: string }[] = [
   { id: "data", label: "导入与导出" },
 ];
 
+const KINDS: { value: AccountKind; label: string }[] = [
+  { value: "Local", label: "本地订阅（RSS/Atom）" },
+  { value: "FreshRSS", label: "FreshRSS" },
+  { value: "GoogleReader", label: "Google Reader 兼容服务" },
+];
+
 interface Props {
   settings: AppSettings;
   fonts: string[];
+  accounts: Account[];
   activeAccount: Account | null;
+  onAccounts: (accounts: Account[]) => void;
+  onAccountSaved: (accounts: Account[], savedId: number) => void;
   groups: FeedGroup[];
   feeds: Feed[];
   onChange: (patch: Partial<AppSettings>) => void;
@@ -51,7 +61,10 @@ function FontSelect({
 export default function SettingsDialog({
   settings,
   fonts,
+  accounts,
   activeAccount,
+  onAccounts,
+  onAccountSaved,
   groups,
   feeds,
   onChange,
@@ -69,6 +82,21 @@ export default function SettingsDialog({
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [newGroupName, setNewGroupName] = useState("");
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
+
+  const initialAccount = activeAccount ?? accounts[0] ?? null;
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(
+    initialAccount?.id ?? null,
+  );
+  const [accountKind, setAccountKind] = useState<AccountKind>(
+    initialAccount?.kind ?? "Local",
+  );
+  const [accountName, setAccountName] = useState(initialAccount?.name ?? "本地账户");
+  const [accountEndpoint, setAccountEndpoint] = useState(initialAccount?.endpoint ?? "");
+  const [accountUsername, setAccountUsername] = useState(initialAccount?.username ?? "");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [accountActive, setAccountActive] = useState(initialAccount?.is_active ?? true);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [confirmAccountDelete, setConfirmAccountDelete] = useState(false);
 
   // Remote groups are server-owned and rebuilt on every sync, so group
   // management is exposed only while the local account is active.
@@ -91,6 +119,79 @@ export default function SettingsDialog({
       notify(String(e), true);
     }
   };
+
+  const selectAccount = (account: Account) => {
+    setSelectedAccountId(account.id);
+    setAccountKind(account.kind);
+    setAccountName(account.name);
+    setAccountEndpoint(account.endpoint);
+    setAccountUsername(account.username);
+    setAccountPassword("");
+    setAccountActive(account.is_active);
+    setConfirmAccountDelete(false);
+  };
+
+  const addNewAccount = () => {
+    setSelectedAccountId(null);
+    setAccountKind("FreshRSS");
+    setAccountName("");
+    setAccountEndpoint("");
+    setAccountUsername("");
+    setAccountPassword("");
+    setAccountActive(true);
+    setConfirmAccountDelete(false);
+  };
+
+  const runAccountAction = async (action: () => Promise<void>) => {
+    setAccountBusy(true);
+    try {
+      await action();
+    } catch (e) {
+      notify(String(e), true);
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const saveAccount = () =>
+    void runAccountAction(async () => {
+      const beforeIds = new Set(accounts.map((a) => a.id));
+      const next = await api.saveAccount({
+        id: selectedAccountId ?? 0,
+        kind: accountKind,
+        name: accountName,
+        endpoint: accountKind === "Local" ? "" : accountEndpoint,
+        username: accountKind === "Local" ? "" : accountUsername,
+        password: accountKind === "Local" ? "" : accountPassword,
+        is_active: accountActive,
+      });
+      const saved =
+        selectedAccountId === null
+          ? next.find((a) => !beforeIds.has(a.id)) ?? next[next.length - 1]
+          : next.find((a) => a.id === selectedAccountId) ?? next[0];
+      onAccounts(next);
+      notify("账户已保存");
+      if (saved) {
+        selectAccount(next.find((a) => a.id === saved.id) ?? saved);
+        onAccountSaved(next, saved.id);
+      }
+    });
+
+  const validateAccount = () =>
+    void runAccountAction(async () => {
+      await api.validateAccount(accountKind, accountEndpoint, accountUsername, accountPassword);
+      notify("连接验证成功");
+    });
+
+  const removeAccount = () =>
+    void runAccountAction(async () => {
+      if (selectedAccountId === null) return;
+      const next = await api.deleteAccount(selectedAccountId);
+      onAccounts(next);
+      if (next[0]) selectAccount(next[0]);
+      setConfirmAccountDelete(false);
+      notify("账户已删除");
+    });
 
   const submitCreate = () => {
     const name = newGroupName.trim();
@@ -135,7 +236,7 @@ export default function SettingsDialog({
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span>设置</span>
-          <button className="tool-btn icon" onClick={onClose} title="关闭">×</button>
+          <button className="modal-close" onClick={onClose} title="关闭" aria-label="关闭设置">×</button>
         </div>
         <div className="modal-body settings-body">
           <nav className="settings-nav" role="tablist" aria-label="设置分类">
@@ -168,7 +269,7 @@ export default function SettingsDialog({
                     <span style={{ color: "var(--muted)", fontSize: 12 }}>正文与界面同步切换</span>
                   </div>
 
-                  <label>按钮风格</label>
+                  <label>顶部按钮风格</label>
                   <select
                     value={settings.button_style}
                     onChange={(e) =>
@@ -293,6 +394,118 @@ export default function SettingsDialog({
 
               {category === "sync" && (
                 <>
+                  <div className="group-title">账户</div>
+                  <div className="account-section account-list">
+                    {accounts.map((account) => (
+                      <div
+                        key={account.id}
+                        className={`account-item${selectedAccountId === account.id ? " on" : ""}`}
+                        onClick={() => selectAccount(account)}
+                      >
+                        <span className="name">{account.name || account.kind}</span>
+                        <span className="kind">{account.kind}</span>
+                        {account.is_active && <span className="kind">当前</span>}
+                      </div>
+                    ))}
+                    <button
+                      className="tool-btn"
+                      disabled={accountBusy}
+                      onClick={addNewAccount}
+                      style={{ alignSelf: "flex-start" }}
+                    >
+                      + 新增账户
+                    </button>
+                  </div>
+
+                  <label>账户类型</label>
+                  <select
+                    value={accountKind}
+                    onChange={(e) => {
+                      setAccountKind(e.target.value as AccountKind);
+                      setAccountPassword("");
+                    }}
+                  >
+                    {KINDS.map((k) => (
+                      <option key={k.value} value={k.value}>{k.label}</option>
+                    ))}
+                  </select>
+                  <label>名称</label>
+                  <input
+                    className="grow"
+                    type="text"
+                    value={accountName}
+                    onChange={(e) => setAccountName(e.target.value)}
+                  />
+                  {accountKind !== "Local" && (
+                    <>
+                      <label>API 地址</label>
+                      <input
+                        className="grow"
+                        type="text"
+                        placeholder="https://rss.example.com/api/greader.php"
+                        value={accountEndpoint}
+                        onChange={(e) => setAccountEndpoint(e.target.value)}
+                      />
+                      <label>用户名</label>
+                      <input
+                        className="grow"
+                        type="text"
+                        value={accountUsername}
+                        onChange={(e) => setAccountUsername(e.target.value)}
+                      />
+                      <label>密码 / API 密码</label>
+                      <input
+                        className="grow"
+                        type="password"
+                        placeholder={selectedAccountId !== null ? "留空表示不修改" : ""}
+                        value={accountPassword}
+                        onChange={(e) => setAccountPassword(e.target.value)}
+                      />
+                    </>
+                  )}
+                  <label>设为当前账户</label>
+                  <div className="field-row">
+                    <input
+                      type="checkbox"
+                      checked={accountActive}
+                      onChange={(e) => setAccountActive(e.target.checked)}
+                    />
+                    <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                      本地账户读取本机订阅；远程账户通过 Google Reader API 同步
+                    </span>
+                  </div>
+                  <div className="field-row account-actions">
+                    {selectedAccountId !== null && (
+                      <button
+                        className="tool-btn"
+                        disabled={accountBusy}
+                        onClick={() => {
+                          if (confirmAccountDelete) void removeAccount();
+                          else setConfirmAccountDelete(true);
+                        }}
+                        style={{ marginRight: "auto", color: "var(--danger)" }}
+                      >
+                        {confirmAccountDelete ? "确认删除？" : "删除账户"}
+                      </button>
+                    )}
+                    {accountKind !== "Local" && (
+                      <button
+                        className="tool-btn"
+                        disabled={accountBusy}
+                        onClick={() => void validateAccount()}
+                      >
+                        验证连接
+                      </button>
+                    )}
+                    <button
+                      className="tool-btn primary"
+                      disabled={accountBusy}
+                      onClick={saveAccount}
+                    >
+                      保存账户
+                    </button>
+                  </div>
+
                   <label>自动同步间隔（分钟）</label>
                   <input
                     type="number"

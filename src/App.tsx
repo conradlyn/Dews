@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { api } from "./api";
 import rssIcon from "./assets/rss.png";
-import AccountDialog from "./components/AccountDialog";
 import ArticleList from "./components/ArticleList";
 import Icon from "./components/icons";
 import FeedPane from "./components/FeedPane";
@@ -11,7 +10,7 @@ import SettingsDialog from "./components/SettingsDialog";
 import type { AppData, AppSettings, Article, Scope, SyncPlan } from "./types";
 import "./styles.css";
 
-type Dialog = "settings" | "account" | "addFeed" | null;
+type Dialog = "settings" | "addFeed" | null;
 
 type SyncStage = "subscriptions" | "articles" | "done";
 interface SyncState {
@@ -647,14 +646,6 @@ export default function App() {
         </span>
         <button
           className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
-          onClick={() => setDialog("account")}
-          title="账户"
-        >
-          <Icon name="account" size={14} />
-          {!compactButtons && <span>账户</span>}
-        </button>
-        <button
-          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
           onClick={() => setDialog("settings")}
           title="设置"
         >
@@ -741,7 +732,13 @@ export default function App() {
         <SettingsDialog
           settings={settings}
           fonts={fonts}
+          accounts={data.accounts}
           activeAccount={data.accounts.find((a) => a.is_active) ?? null}
+          onAccounts={(accounts) => setData((prev) => (prev ? { ...prev, accounts } : prev))}
+          onAccountSaved={(accounts, savedId) => {
+            const saved = accounts.find((a) => a.id === savedId);
+            if (saved?.is_active && saved.kind !== "Local") void runSync();
+          }}
           groups={data.groups}
           feeds={data.feeds}
           onChange={patchSettings}
@@ -769,18 +766,6 @@ export default function App() {
           onExportOpml={() => void exportOpml()}
           notify={notify}
           onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog === "account" && (
-        <AccountDialog
-          accounts={data.accounts}
-          onAccounts={(accounts) => setData((prev) => (prev ? { ...prev, accounts } : prev))}
-          onClose={() => setDialog(null)}
-          onSaved={(accounts, savedId) => {
-            const saved = accounts.find((a) => a.id === savedId);
-            if (saved?.is_active && saved.kind !== "Local") void runSync();
-          }}
-          notify={notify}
         />
       )}
       {dialog === "addFeed" && (

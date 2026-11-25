@@ -48,7 +48,6 @@ function ArticleList({
   const settings = data.settings;
   const thumbPx = THUMB_PX[settings.thumbnail_size] ?? 0;
   const showSnippet = settings.summary_lines > 0;
-  const compact = settings.button_style === "icon";
   const hasUnread = useMemo(() => articles.some((a) => !a.is_read), [articles]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [limit, setLimit] = useState(PAGE_SIZE);
@@ -107,23 +106,23 @@ function ArticleList({
             ] as const).map(([value, label, icon]) => (
               <button
                 key={value}
-                className={`filter-chip${settings.filter === value ? " on" : ""}${compact ? " icon-only" : ""}`}
+                className={`filter-chip${settings.filter === value ? " on" : ""}`}
                 onClick={() => onFilter(value)}
                 title={label}
               >
                 <Icon name={icon} />
-                {!compact && <span>{label}</span>}
+                <span>{label}</span>
               </button>
             ))}
           </div>
           <button
-            className={`filter-chip mark-all-read${compact ? " icon-only" : ""}`}
+            className="filter-chip mark-all-read"
             onClick={onMarkAllRead}
             disabled={!hasUnread}
             title="将当前列表中的文章全部标为已读"
           >
             <Icon name="check-all" />
-            {!compact && <span>全部已读</span>}
+            <span>全部已读</span>
           </button>
         </div>
       </div>
