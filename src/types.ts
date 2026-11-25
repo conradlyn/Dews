@@ -70,6 +70,8 @@ export interface AppSettings {
   mark_as_read_when_next: boolean;
   sync_interval_minutes: number;
   filter: string;
+  /** "icon-text" shows icon + label, "icon" hides the label. */
+  button_style: "icon-text" | "icon";
   feed_column_width: number;
   article_column_width: number;
   reading_margin: number;
@@ -110,6 +112,11 @@ export interface FeedSyncResult {
   articles: number;
   total: number;
   error: string | null;
+}
+
+export interface MarkReadReport {
+  marked: number;
+  pending: number;
 }
 
 export type Scope =

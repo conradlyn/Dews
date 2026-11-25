@@ -361,6 +361,54 @@ impl GoogleReaderClient {
         Ok(())
     }
 
+    /// Mark many items in one request. The Reader API accepts repeated `i`
+    /// fields, so flushing a page of queued marks costs one round-trip instead
+    /// of one per article. Chunked to keep proxies happy.
+    pub async fn mark_many(
+        &mut self,
+        item_ids: &[String],
+        add_tag: Option<&str>,
+        remove_tag: Option<&str>,
+    ) -> Result<(), String> {
+        if item_ids.is_empty() {
+            return Ok(());
+        }
+        let token = self.get_token().await?;
+        let url = self.api("/edit-tag")?;
+        for chunk in item_ids.chunks(200) {
+            let body = {
+                let mut form = url::form_urlencoded::Serializer::new(String::new());
+                for id in chunk {
+                    form.append_pair("i", id);
+                }
+                form.append_pair("T", &token);
+                if let Some(tag) = add_tag {
+                    form.append_pair("a", tag);
+                }
+                if let Some(tag) = remove_tag {
+                    form.append_pair("r", tag);
+                }
+                form.finish()
+            };
+            let response = self
+                .apply_auth(
+                    self.http
+                        .post(&url)
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .body(body),
+                )?
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("批量标记状态失败 ({status})：{}", shorten(&body)));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn subscribe(&mut self, feed_url: &str) -> Result<Option<String>, String> {
         self.ensure_auth().await?;
         let encoded: String = url::form_urlencoded::byte_serialize(feed_url.as_bytes()).collect();

@@ -607,15 +607,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut value = serde_json::to_value(AppData::default()).unwrap();
+        let settings = value
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_marks")
+            .is_some();
+        assert!(settings);
         value
             .as_object_mut()
             .unwrap()
-            .remove("pending_marks");
+            .get_mut("settings")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("button_style");
         fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
 
         let store = JsonAppStore::new(Some(path.clone()));
         let data = store.load();
         assert!(data.pending_marks.is_empty());
+        assert_eq!(data.settings.button_style, "icon-text");
         let persisted: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(persisted.get("pending_marks").is_some());

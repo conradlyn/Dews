@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { AppData, Article, Scope } from "../types";
+import Icon from "./icons";
 
 interface Props {
   data: AppData;
@@ -10,6 +11,7 @@ interface Props {
   onSelect: (id: string) => void;
   onToggleStar: (article: Article) => void;
   onFilter: (filter: string) => void;
+  onMarkAllRead: () => void;
 }
 
 const THUMB_PX: Record<number, number> = { 1: 48, 2: 72, 3: 104 };
@@ -41,10 +43,13 @@ function ArticleList({
   onSelect,
   onToggleStar,
   onFilter,
+  onMarkAllRead,
 }: Props) {
   const settings = data.settings;
   const thumbPx = THUMB_PX[settings.thumbnail_size] ?? 0;
   const showSnippet = settings.summary_lines > 0;
+  const compact = settings.button_style === "icon";
+  const hasUnread = useMemo(() => articles.some((a) => !a.is_read), [articles]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [limit, setLimit] = useState(PAGE_SIZE);
 
@@ -93,20 +98,33 @@ function ArticleList({
           <span title={scopeLabel}>{scopeLabel}</span>
           <small>{articles.length} 篇</small>
         </div>
-        <div className="segmented">
-          {[
-            ["all", "全部"],
-            ["unread", "未读"],
-            ["read", "已读"],
-          ].map(([value, label]) => (
-            <button
-              key={value}
-              className={settings.filter === value ? "on" : ""}
-              onClick={() => onFilter(value)}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="pane-actions">
+          <div className="segmented">
+            {([
+              ["all", "全部", "all"],
+              ["unread", "未读", "unread"],
+              ["read", "已读", "read"],
+            ] as const).map(([value, label, icon]) => (
+              <button
+                key={value}
+                className={`filter-chip${settings.filter === value ? " on" : ""}${compact ? " icon-only" : ""}`}
+                onClick={() => onFilter(value)}
+                title={label}
+              >
+                <Icon name={icon} />
+                {!compact && <span>{label}</span>}
+              </button>
+            ))}
+          </div>
+          <button
+            className={`filter-chip mark-all-read${compact ? " icon-only" : ""}`}
+            onClick={onMarkAllRead}
+            disabled={!hasUnread}
+            title="将当前列表中的文章全部标为已读"
+          >
+            <Icon name="check-all" />
+            {!compact && <span>全部已读</span>}
+          </button>
         </div>
       </div>
       <div className="scroll" ref={scrollRef} onScroll={onScroll}>

@@ -165,6 +165,19 @@ export default function SettingsDialog({
                     <span style={{ color: "var(--muted)", fontSize: 12 }}>正文与界面同步切换</span>
                   </div>
 
+                  <label>按钮风格</label>
+                  <select
+                    value={settings.button_style}
+                    onChange={(e) =>
+                      onChange({
+                        button_style: e.target.value as AppSettings["button_style"],
+                      })
+                    }
+                  >
+                    <option value="icon-text">图标与文字</option>
+                    <option value="icon">仅图标</option>
+                  </select>
+
                   <div className="group-title">订阅栏</div>
                   <label>字体</label>
                   <FontSelect

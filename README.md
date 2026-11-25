@@ -1,14 +1,17 @@
 # dews
 
-一个面向 Windows 的桌面 RSS 阅读器，使用 Tauri 2 + React + TypeScript + Rust 构建，通过 Google Reader / FreshRSS 兼容协议同步。
+一个跨平台的桌面 RSS 阅读器，使用 Tauri 2 + React + TypeScript + Rust 构建，通过 Google Reader / FreshRSS 兼容协议同步。
 
 ## 功能
 
 - 三栏布局：订阅源 / 文章列表 / 阅读视图，支持拖动分栏
 - FreshRSS 账号登录，两阶段同步（先订阅与分类，再逐源同步文章），底部状态栏显示进度
-- 已读、星标状态与服务器双向对齐，支持全量同步
+- 已读、星标状态与服务器双向对齐，支持全量同步；远程不可用时本地操作先入队，待下次同步重试
+- 当前列表一键批量标为已读，远程批量推送失败同样进入待同步队列
 - 阅读视图内置「获取全文」：抓取原文正文，并带 `Referer` 下载正文图片后内嵌
-- 系统字体枚举、分栏独立字体设置、摘要行数、缩略图尺寸等阅读偏好
+- 系统字体枚举、分栏独立字体设置、摘要行数、缩略图尺寸、正文边距/行距/段首缩进等阅读偏好
+- 工具栏与筛选按钮支持「图标 + 文字」或「仅图标」两种风格
+- 本地账户订阅源分组：新建、重命名、排序、删除与归属调整
 - OPML 导入 / 导出，深色主题
 - 便携模式：exe 同目录放一个空的 `portable` 文件，数据即存放在 `./data`
 
@@ -43,7 +46,7 @@ macOS 本地一键构建（`.app` + `.dmg`）：
 
 ### GitHub Actions 自动构建
 
-`.github/workflows/build.yml` 在推送 `main`、推送 `v*` 标签、PR 或手动触发时构建三类产物，并在 Actions 页面以 artifact 形式提供下载：
+`.github/workflows/build.yml` 在推送 `main`、`local/**` 分支、推送 `v*` 标签、PR 或手动触发时构建三类产物，并在 Actions 页面以 artifact 形式提供下载。推送 `v*` 标签时，还会自动创建 GitHub Release 并附上全部产物：
 
 - Windows 安装版：NSIS（`*-setup.exe`）与 MSI
 - Windows 便携版：`dews_*_portable.zip`（含 `dews.exe` 与空的 `portable` 标记文件）

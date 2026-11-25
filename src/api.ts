@@ -8,6 +8,7 @@ import type {
   SyncReport,
   SyncPlan,
   FeedSyncResult,
+  MarkReadReport,
 } from "./types";
 
 export const api = {
@@ -27,6 +28,8 @@ export const api = {
       read: read === undefined ? null : read,
       starred: starred === undefined ? null : starred,
     }),
+  markArticlesRead: (ids: string[]) =>
+    invoke<MarkReadReport>("mark_articles_read", { ids }),
 
   syncAll: () => invoke<SyncReport>("sync_all"),
   syncSubscriptions: () => invoke<SyncPlan>("sync_subscriptions"),

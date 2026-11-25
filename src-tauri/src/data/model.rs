@@ -173,6 +173,9 @@ pub struct AppSettings {
     pub mark_as_read_when_next: bool,
     pub sync_interval_minutes: i32,
     pub filter: String,
+    /// "icon-text" renders icon + label; "icon" renders the icon alone.
+    #[serde(default = "default_button_style")]
+    pub button_style: String,
     pub feed_column_width: f64,
     pub article_column_width: f64,
     /// Reading pane: horizontal padding on both sides (px).
@@ -189,6 +192,7 @@ pub struct AppSettings {
 fn default_reading_margin() -> i32 { 34 }
 fn default_reading_line_height() -> f64 { 1.85 }
 fn default_reading_indent() -> i32 { 0 }
+fn default_button_style() -> String { "icon-text".to_string() }
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -206,6 +210,7 @@ impl Default for AppSettings {
             mark_as_read_when_next: true,
             sync_interval_minutes: 15,
             filter: "all".to_string(),
+            button_style: default_button_style(),
             feed_column_width: 266.0,
             article_column_width: 404.0,
             reading_margin: 34,

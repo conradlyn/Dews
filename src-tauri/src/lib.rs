@@ -16,6 +16,7 @@ pub fn run() {
             commands::get_article_html,
             commands::fetch_full_text,
             commands::mark_article,
+            commands::mark_articles_read,
             commands::sync_all,
             commands::sync_subscriptions,
             commands::sync_feed_articles,

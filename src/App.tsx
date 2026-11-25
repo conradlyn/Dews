@@ -4,6 +4,7 @@ import { api } from "./api";
 import rssIcon from "./assets/rss.png";
 import AccountDialog from "./components/AccountDialog";
 import ArticleList from "./components/ArticleList";
+import Icon from "./components/icons";
 import FeedPane from "./components/FeedPane";
 import ReadingPane from "./components/ReadingPane";
 import SettingsDialog from "./components/SettingsDialog";
@@ -387,6 +388,41 @@ export default function App() {
     });
   }, [notify, refresh]);
 
+  // Mark the current visible list as read in one backend call. The Rust side
+  // queues remote marks instead of raising a toast per article.
+  const markAllRead = useCallback(() => {
+    const ids = articles
+      .filter((article) => !article.is_read)
+      .map((article) => article.id);
+    if (ids.length === 0) {
+      notify("当前列表没有未读文章");
+      return;
+    }
+    const wanted = new Set(ids);
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            articles: current.articles.map((a) =>
+              wanted.has(a.id) ? { ...a, is_read: true } : a,
+            ),
+          }
+        : current,
+    );
+    void api
+      .markArticlesRead(ids)
+      .then((report) => {
+        const pending = report.pending
+          ? `（${report.pending} 篇等待远程同步）`
+          : "";
+        notify(`已将 ${report.marked} 篇标为已读${pending}`);
+      })
+      .catch((e) => {
+        notify(String(e), true);
+        void refresh();
+      });
+  }, [articles, notify, refresh]);
+
   // Download the original page and extract its full text. The Rust command
   // persists the result, so we update the iframe and reload article data.
   const fetchFullText = useCallback(async (article: Article) => {
@@ -563,6 +599,7 @@ export default function App() {
   }
 
   const settings = data.settings;
+  const compactButtons = settings.button_style === "icon";
   const shellClass = `app-shell${settings.dark_theme ? " dark" : ""}`;
   const workspaceStyle = {
     "--feed-width": `${settings.feed_column_width}px`,
@@ -576,11 +613,26 @@ export default function App() {
           <img className="brand-mark" src={rssIcon} alt="" />
           <span>dews</span>
         </div>
-        <button className="tool-btn primary" onClick={() => setDialog("addFeed")}>
-          ＋ 添加订阅
+        <button
+          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
+          onClick={() => setDialog("addFeed")}
+          title="添加订阅"
+        >
+          <Icon name="add-feed" size={14} />
+          {!compactButtons && <span>添加订阅</span>}
         </button>
-        <button className="tool-btn" disabled={busy} onClick={() => void runSync()}>
-          {busy ? "同步中…" : "⟳ 同步"}
+        <button
+          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
+          disabled={busy}
+          onClick={() => void runSync()}
+          title={busy ? "同步中…" : "同步"}
+        >
+          <Icon
+            name="sync"
+            size={14}
+            className={busy ? "spinning" : undefined}
+          />
+          {!compactButtons && <span>{busy ? "同步中…" : "同步"}</span>}
         </button>
         <input
           className="search-box"
@@ -593,11 +645,21 @@ export default function App() {
         <span className="account-chip">
           {data.accounts.find((a) => a.is_active)?.name || "本地账户"}
         </span>
-        <button className="tool-btn" onClick={() => setDialog("account")}>
-          账户
+        <button
+          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
+          onClick={() => setDialog("account")}
+          title="账户"
+        >
+          <Icon name="account" size={14} />
+          {!compactButtons && <span>账户</span>}
         </button>
-        <button className="tool-btn" onClick={() => setDialog("settings")}>
-          设置
+        <button
+          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
+          onClick={() => setDialog("settings")}
+          title="设置"
+        >
+          <Icon name="settings" size={14} />
+          {!compactButtons && <span>设置</span>}
         </button>
       </header>
 
@@ -621,6 +683,7 @@ export default function App() {
           onSelect={handleSelect}
           onToggleStar={toggleStar}
           onFilter={(filter) => patchSettings({ filter })}
+          onMarkAllRead={markAllRead}
         />
         <div
           className={`splitter${dragging === "article" ? " dragging" : ""}`}

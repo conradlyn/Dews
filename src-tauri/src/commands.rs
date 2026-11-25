@@ -458,6 +458,7 @@ async fn flush_pending_for_account(state: &AppState, account: &Account) -> Resul
     let outcome: Result<(), String> = async {
         let mut client =
             GoogleReaderClient::with_timeout(account.clone(), Duration::from_secs(12))?;
+        let mut groups: HashMap<(Option<bool>, Option<bool>), Vec<String>> = HashMap::new();
         let mut processed = Vec::new();
         for item in pending {
             let remote_id = {
@@ -469,27 +470,33 @@ async fn flush_pending_for_account(state: &AppState, account: &Account) -> Resul
                     .filter(|id| !id.is_empty())
             };
             let Some(remote_id) = remote_id else { continue };
-            if let Some(value) = item.read {
+            groups
+                .entry((item.read, item.starred))
+                .or_default()
+                .push(remote_id);
+            processed.push(item);
+        }
+        for ((read, starred), ids) in groups {
+            if let Some(value) = read {
                 client
-                    .mark(
-                        &remote_id,
+                    .mark_many(
+                        &ids,
                         value.then_some(greader::READ_TAG),
                         (!value).then_some(greader::READ_TAG),
                     )
                     .await
                     .map_err(|e| format!("同步已读状态失败：{e}"))?;
             }
-            if let Some(value) = item.starred {
+            if let Some(value) = starred {
                 client
-                    .mark(
-                        &remote_id,
+                    .mark_many(
+                        &ids,
                         value.then_some(greader::STARRED_TAG),
                         (!value).then_some(greader::STARRED_TAG),
                     )
                     .await
                     .map_err(|e| format!("同步星标状态失败：{e}"))?;
             }
-            processed.push(item);
         }
         if !processed.is_empty() {
             let mut data = state.lock()?;
@@ -561,6 +568,78 @@ pub async fn mark_article(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MarkReadReport {
+    pub marked: usize,
+    /// Marks that could not be pushed yet and will be retried on next sync.
+    pub pending: usize,
+}
+
+/// Mark a whole visible list as read with one disk write and one queued batch
+/// per remote account. Remote failures stay in `pending_marks`; the UI does not
+/// receive an error toast for them.
+#[tauri::command]
+pub async fn mark_articles_read(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<MarkReadReport, String> {
+    if ids.is_empty() {
+        return Ok(MarkReadReport { marked: 0, pending: 0 });
+    }
+    let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let (marked, account_ids, accounts) = {
+        let mut data = state.lock()?;
+        let remote_accounts: HashMap<i32, AccountKind> = data
+            .accounts
+            .iter()
+            .map(|a| (a.id, a.kind))
+            .collect();
+        let mut marked = 0usize;
+        let mut queued_ids = Vec::new();
+        let mut account_ids = HashSet::new();
+        for article in data.articles.iter_mut() {
+            if article.is_read || !wanted.contains(article.id.as_str()) {
+                continue;
+            }
+            article.is_read = true;
+            marked += 1;
+            let is_remote = remote_accounts
+                .get(&article.account_id)
+                .is_some_and(|kind| *kind != AccountKind::Local)
+                && !article.remote_id.is_empty();
+            if is_remote {
+                queued_ids.push(article.id.clone());
+                account_ids.insert(article.account_id);
+            }
+        }
+        for id in &queued_ids {
+            queue_pending_mark(&mut data, id, Some(true), None);
+        }
+        if marked > 0 {
+            state.persist(&data)?;
+        }
+        (marked, account_ids, data.accounts.clone())
+    };
+
+    // Best effort, with the same cooldown as a single star/read click.
+    for account_id in account_ids {
+        if let Some(account) = accounts.iter().find(|a| a.id == account_id) {
+            if let Err(e) = flush_pending_for_account(&state, account).await {
+                eprintln!("批量阅读状态暂时无法同步，已加入待同步队列：{e}");
+            }
+        }
+    }
+
+    let pending = {
+        let data = state.lock()?;
+        data.pending_marks
+            .iter()
+            .filter(|p| wanted.contains(p.article_id.as_str()))
+            .count()
+    };
+    Ok(MarkReadReport { marked, pending })
 }
 
 // ---------------------------------------------------------------------------
