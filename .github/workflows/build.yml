@@ -176,10 +176,21 @@ jobs:
 
       # Re-publishing the same version (e.g. after a rename) must not leave the
       # previous asset names behind: the release is recreated from scratch.
+      # GH_REPO is required because this job never checks out the repository,
+      # and a failed delete must fail the run — otherwise the upload below dies
+      # with "asset already exists" and leaves a half-old release behind.
       - name: Drop previous release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete "${{ github.ref_name }}" --yes || true
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release delete "${GITHUB_REF_NAME}" --yes
+            echo "deleted the previous release for ${GITHUB_REF_NAME}"
+          else
+            echo "no previous release for ${GITHUB_REF_NAME}"
+          fi
 
       # The updater reads this manifest from the `latest` release alias. It must
       # list the signed archive for each platform plus the signature itself.
