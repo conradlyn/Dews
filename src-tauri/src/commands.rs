@@ -311,6 +311,7 @@ pub fn get_article_html(
             margin_px: settings.reading_margin,
             line_height: settings.reading_line_height,
             indent_chars: settings.reading_indent,
+            toc: article_html::TocMode::from_setting(&settings.toc_mode),
         },
     );
     if page.contains("</body>") {
@@ -360,6 +361,7 @@ pub async fn fetch_full_text(
                 margin_px: s.reading_margin,
                 line_height: s.reading_line_height,
                 indent_chars: s.reading_indent,
+                toc: article_html::TocMode::from_setting(&s.toc_mode),
             },
         )
     };

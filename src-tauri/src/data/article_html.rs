@@ -97,23 +97,47 @@ fn html_encode(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// How the reading pane builds its outline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TocMode {
+    /// Expanded beside the text column when the pane is wide enough.
+    Auto,
+    /// Always starts as the small floating button.
+    Button,
+    /// No outline at all.
+    Off,
+}
+
+impl TocMode {
+    /// Unknown values fall back to `Auto`, so a settings file written by an
+    /// older build keeps working.
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => TocMode::Off,
+            "button" => TocMode::Button,
+            _ => TocMode::Auto,
+        }
+    }
+}
+
 /// Typography controls for the reading pane. Values are clamped in `render`.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadingStyle {
     pub margin_px: i32,
     pub line_height: f64,
     pub indent_chars: i32,
+    pub toc: TocMode,
 }
 
 impl Default for ReadingStyle {
     fn default() -> Self {
-        Self { margin_px: 34, line_height: 1.85, indent_chars: 0 }
+        Self { margin_px: 34, line_height: 1.85, indent_chars: 0, toc: TocMode::Auto }
     }
 }
 
-/// Scrollbar and outline styling. Kept out of the `format!` template so the
+/// Scrollbar styling, always emitted. Kept out of the `format!` template so the
 /// braces do not have to be escaped.
-const EXTRA_CSS: &str = r#"
+const SCROLL_CSS: &str = r#"
 /* The thumb stays out of the way until the reader actually scrolls, then fades
    back out — the overlay behaviour macOS and Windows both use natively.
    `scrollbar-color` is set on the reveal state as well: current WebKit and
@@ -132,6 +156,10 @@ html::-webkit-scrollbar-thumb {
 html.is-scrolling::-webkit-scrollbar-thumb { background: var(--scroll-thumb); }
 html.is-scrolling::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
+"#;
+
+/// Outline styling, emitted unless the outline is switched off.
+const TOC_CSS: &str = r#"
 /* Anchored headings keep clear of the top edge when jumped to. */
 h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
 
@@ -204,20 +232,26 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
 /// Runs inside the article frame. It is appended by us, after `clean` has
 /// stripped every script the article itself carried, so it is the only active
 /// content in the document.
-const EXTRA_JS: &str = r##"<script>
+const SCROLL_JS: &str = r##"<script>
 (function () {
   "use strict";
   var root = document.documentElement;
   var hideTimer = 0;
 
   // Reveal the scrollbar while the reader scrolls, then let it fade out.
-  function flashScrollbar() {
+  window.addEventListener("scroll", function () {
     root.classList.add("is-scrolling");
     clearTimeout(hideTimer);
     hideTimer = setTimeout(function () { root.classList.remove("is-scrolling"); }, 900);
-  }
-  window.addEventListener("scroll", flashScrollbar, { passive: true });
+  }, { passive: true });
+})();
+</script>"##;
 
+/// Builds the outline. `__TOC_COLLAPSE__` is replaced with the initial state
+/// that matches the configured mode.
+const TOC_JS: &str = r##"<script>
+(function () {
+  "use strict";
   var heads = Array.prototype.slice
     .call(document.querySelectorAll("h1, h2, h3, h4"))
     .filter(function (h) { return (h.textContent || "").trim() !== ""; });
@@ -278,9 +312,9 @@ const EXTRA_JS: &str = r##"<script>
   toggle.addEventListener("click", function () {
     setCollapsed(!nav.classList.contains("collapsed"));
   });
-  // Expanded only when the outline fits beside the 800px text column
-  // (208px panel + 20px inset + a 12px gap).
-  setCollapsed(window.innerWidth - 800 < 480);
+  // `auto` expands only when the outline fits beside the 800px text column
+  // (208px panel + 20px inset + a 12px gap); `button` always starts collapsed.
+  setCollapsed(__TOC_COLLAPSE__);
 
   var active = -1;
   function highlightCurrent() {
@@ -341,8 +375,17 @@ pub fn render(html: Option<&str>, base_url: Option<&str>, dark: bool, font_size:
         )
     };
 
-    let extra_css = EXTRA_CSS;
-    let extra_js = EXTRA_JS;
+    // The scrollbar script is always needed; the outline only when enabled.
+    let mut extra_css = String::from(SCROLL_CSS);
+    let mut extra_js = String::from(SCROLL_JS);
+    if style.toc != TocMode::Off {
+        extra_css.push_str(TOC_CSS);
+        let collapsed = match style.toc {
+            TocMode::Button => "true",
+            _ => "window.innerWidth - 800 < 480",
+        };
+        extra_js.push_str(&TOC_JS.replace("__TOC_COLLAPSE__", collapsed));
+    }
 
     format!(
         r#"<!DOCTYPE html>
@@ -460,7 +503,7 @@ mod tests {
             false,
             16,
             None,
-            ReadingStyle { margin_px: 64, line_height: 2.1, indent_chars: 2 },
+            ReadingStyle { margin_px: 64, line_height: 2.1, indent_chars: 2, toc: TocMode::Auto },
         );
         assert!(out.contains("--margin: 64px;"));
         assert!(out.contains("--line-height: 2.1"));
@@ -504,8 +547,8 @@ mod tests {
         let body = out.find("正文内容").expect("article body missing");
         assert!(script > body, "the script must come after the article body");
         assert!(out[script..].contains("dews-toc"));
-        // The article's own script is still stripped; ours is the only one left.
-        assert_eq!(out.matches("<script>").count(), 1);
+        // The article's own script is still stripped; only ours remain.
+        assert_eq!(out.matches("<script>").count(), 2);
         assert!(out.contains("h1, h2, h3, h4"));
     }
 
@@ -514,6 +557,50 @@ mod tests {
         let out = render(Some(ARTICLE), None, false, 16, None, ReadingStyle::default());
         // The threshold lives in the script so short pieces stay clean.
         assert!(out.contains("heads.length < 3"));
+    }
+
+    fn with_toc(mode: TocMode) -> String {
+        render(
+            Some(ARTICLE),
+            None,
+            false,
+            16,
+            None,
+            ReadingStyle { toc: mode, ..ReadingStyle::default() },
+        )
+    }
+
+    #[test]
+    fn toc_mode_auto_expands_only_when_the_pane_is_wide() {
+        let out = with_toc(TocMode::Auto);
+        assert!(out.contains("setCollapsed(window.innerWidth - 800 < 480);"));
+        assert!(!out.contains("__TOC_COLLAPSE__"));
+    }
+
+    #[test]
+    fn toc_mode_button_always_starts_collapsed() {
+        let out = with_toc(TocMode::Button);
+        assert!(out.contains("setCollapsed(true);"));
+        assert!(out.contains(".dews-toc"));
+    }
+
+    #[test]
+    fn toc_mode_off_emits_neither_outline_css_nor_script() {
+        let out = with_toc(TocMode::Off);
+        assert!(!out.contains("dews-toc"));
+        assert!(!out.contains("scroll-margin-top"));
+        // The scrollbar script must survive: it is independent of the outline.
+        assert!(out.contains("is-scrolling"));
+        assert_eq!(out.matches("<script>").count(), 1);
+    }
+
+    #[test]
+    fn toc_mode_parsing_falls_back_to_auto() {
+        assert_eq!(TocMode::from_setting("off"), TocMode::Off);
+        assert_eq!(TocMode::from_setting(" BUTTON "), TocMode::Button);
+        assert_eq!(TocMode::from_setting("auto"), TocMode::Auto);
+        assert_eq!(TocMode::from_setting(""), TocMode::Auto);
+        assert_eq!(TocMode::from_setting("nonsense"), TocMode::Auto);
     }
 
     #[test]

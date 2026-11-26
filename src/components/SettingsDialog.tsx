@@ -433,6 +433,20 @@ export default function SettingsDialog({
                     value={settings.reading_indent}
                     onChange={(e) => onChange({ reading_indent: Number(e.target.value) })}
                   />
+                  <label>正文目录</label>
+                  <select
+                    value={settings.toc_mode}
+                    onChange={(e) =>
+                      onChange({ toc_mode: e.target.value as AppSettings["toc_mode"] })
+                    }
+                  >
+                    <option value="auto">自动（够宽时展开）</option>
+                    <option value="button">自动隐藏（悬浮按钮）</option>
+                    <option value="off">关闭</option>
+                  </select>
+                  <p className="about-hint">
+                    正文有三个以上标题时才生成目录；「自动」在阅读栏足够宽时直接展开，否则收成一个悬浮按钮。
+                  </p>
                   <label>打开文章即已读</label>
                   <div className="field-row">
                     <input

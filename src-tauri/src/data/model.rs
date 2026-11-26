@@ -214,11 +214,16 @@ pub struct AppSettings {
     /// Reading pane: first-line indent in Chinese characters (0 = none).
     #[serde(default = "default_reading_indent")]
     pub reading_indent: i32,
+    /// Reading pane outline: "auto" expands beside the text column when there
+    /// is room, "button" always starts as a floating button, "off" disables it.
+    #[serde(default = "default_toc_mode")]
+    pub toc_mode: String,
 }
 
 fn default_reading_margin() -> i32 { 34 }
 fn default_reading_line_height() -> f64 { 1.85 }
 fn default_reading_indent() -> i32 { 0 }
+fn default_toc_mode() -> String { "auto".to_string() }
 fn default_button_style() -> String { "icon-text".to_string() }
 fn default_article_title_font_family() -> String { "Microsoft YaHei".to_string() }
 fn default_article_title_font_size() -> f64 { 13.0 }
@@ -254,6 +259,7 @@ impl Default for AppSettings {
             reading_margin: 34,
             reading_line_height: 1.85,
             reading_indent: 0,
+            toc_mode: default_toc_mode(),
         }
     }
 }
@@ -343,5 +349,13 @@ mod tests {
         let id = new_id();
         assert_eq!(id.len(), 32);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn settings_written_before_the_outline_existed_still_load() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("toc_mode");
+        let parsed: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.toc_mode, "auto");
     }
 }

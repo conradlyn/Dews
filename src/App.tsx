@@ -365,6 +365,7 @@ export default function App() {
     data?.settings.reading_margin,
     data?.settings.reading_line_height,
     data?.settings.reading_indent,
+    data?.settings.toc_mode,
     notify,
   ]);
 

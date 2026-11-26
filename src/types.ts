@@ -83,6 +83,9 @@ export interface AppSettings {
   reading_margin: number;
   reading_line_height: number;
   reading_indent: number;
+  /** Reading-pane outline: "auto" expands when wide, "button" hides behind a
+   *  floating button, "off" disables it. */
+  toc_mode: "auto" | "button" | "off";
 }
 
 export interface AppData {
