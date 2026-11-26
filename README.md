@@ -82,3 +82,7 @@ macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环�
 ```bash
 CARGO_PROFILE_TEST_DEBUG=0 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
+
+## 许可证
+
+[MIT](LICENSE)
