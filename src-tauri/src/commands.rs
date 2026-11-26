@@ -93,6 +93,10 @@ pub struct SyncPlan {
 }
 
 /// Result of synchronizing one feed (phase 2 step).
+///
+/// `changed` and `removed` let the UI fold one feed's outcome into its local
+/// copy immediately. Without them the unread counters would only move after
+/// every feed finished, which made a 50-feed sync look frozen.
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedSyncResult {
     pub feed_id: String,
@@ -100,6 +104,10 @@ pub struct FeedSyncResult {
     pub articles: usize,
     pub total: usize,
     pub error: Option<String>,
+    /// Rows that were inserted or whose read/starred flags moved.
+    pub changed: Vec<ArticleView>,
+    /// Article ids deleted because the server no longer has them.
+    pub removed: Vec<String>,
 }
 
 /// Result of the preflight check in the "add feed" dialog.
@@ -168,38 +176,38 @@ document.addEventListener('click', function (e) {
 // Bootstrap / settings / fonts
 // ---------------------------------------------------------------------------
 
+/// Build the lightweight row the UI receives. Snippets fall back to the stored
+/// plain text and finally to a stripped summary, so a row is never blank.
+fn article_view(a: &Article) -> ArticleView {
+    let snippet = if let Some(s) = a.snippet.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(s.to_string())
+    } else if let Some(t) = a.content_text.as_deref().filter(|t| !t.trim().is_empty()) {
+        Some(t.chars().take(240).collect())
+    } else {
+        let text = html::to_text(a.summary_html.as_deref(), 240);
+        if text.is_empty() { None } else { Some(text) }
+    };
+    ArticleView {
+        id: a.id.clone(),
+        account_id: a.account_id,
+        feed_id: a.feed_id.clone(),
+        remote_id: a.remote_id.clone(),
+        title: a.title.clone(),
+        author: a.author.clone(),
+        link: a.link.clone(),
+        published: a.published,
+        is_read: a.is_read,
+        is_starred: a.is_starred,
+        is_archived: a.is_archived,
+        snippet,
+        thumbnail_url: a.thumbnail_url.clone(),
+    }
+}
+
 #[tauri::command]
 pub fn bootstrap(state: State<'_, AppState>) -> Result<AppDataView, String> {
     let data = state.lock()?;
-    let articles = data
-        .articles
-        .iter()
-        .map(|a| {
-            let snippet = if let Some(s) = a.snippet.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(s.to_string())
-            } else if let Some(t) = a.content_text.as_deref().filter(|t| !t.trim().is_empty()) {
-                Some(t.chars().take(240).collect())
-            } else {
-                let text = html::to_text(a.summary_html.as_deref(), 240);
-                if text.is_empty() { None } else { Some(text) }
-            };
-            ArticleView {
-                id: a.id.clone(),
-                account_id: a.account_id,
-                feed_id: a.feed_id.clone(),
-                remote_id: a.remote_id.clone(),
-                title: a.title.clone(),
-                author: a.author.clone(),
-                link: a.link.clone(),
-                published: a.published,
-                is_read: a.is_read,
-                is_starred: a.is_starred,
-                is_archived: a.is_archived,
-                snippet,
-                thumbnail_url: a.thumbnail_url.clone(),
-            }
-        })
-        .collect();
+    let articles = data.articles.iter().map(article_view).collect();
     Ok(AppDataView {
         accounts: data.accounts.clone(),
         groups: data.groups.clone(),
@@ -207,6 +215,14 @@ pub fn bootstrap(state: State<'_, AppState>) -> Result<AppDataView, String> {
         articles,
         settings: data.settings.clone(),
     })
+}
+
+/// Push the unread total to the native shell: a Dock badge on macOS, a star
+/// overlay on the Windows taskbar button. The UI owns the number because it
+/// also reflects optimistic read/star updates that never touch the server.
+#[tauri::command]
+pub fn set_unread_badge(count: usize, app: tauri::AppHandle) {
+    crate::desktop::set_badge(&app, count);
 }
 
 /// Full-text search runs in Rust so the UI never has to receive article bodies.
@@ -965,6 +981,35 @@ fn upsert_article_synced(
     }
 }
 
+/// Read/starred flags per article id for one feed. Diffing a snapshot taken
+/// before a sync pass against the state afterwards yields exactly the rows the
+/// UI must replace, without shipping the whole feed over IPC.
+fn flag_snapshot(data: &AppData, feed_id: &str) -> HashMap<String, (bool, bool)> {
+    data.articles
+        .iter()
+        .filter(|a| a.feed_id == feed_id)
+        .map(|a| (a.id.clone(), (a.is_read, a.is_starred)))
+        .collect()
+}
+
+/// Append the rows that were inserted or whose flags moved since `before`.
+fn collect_changes(
+    data: &AppData,
+    feed_id: &str,
+    before: &HashMap<String, (bool, bool)>,
+    out: &mut Vec<ArticleView>,
+) {
+    for a in data.articles.iter().filter(|a| a.feed_id == feed_id) {
+        let changed = match before.get(&a.id) {
+            Some(flags) => *flags != (a.is_read, a.is_starred),
+            None => true,
+        };
+        if changed {
+            out.push(article_view(a));
+        }
+    }
+}
+
 /// Phase 1: refresh the subscription tree (groups + feeds) from every active
 /// account. The UI refreshes the left pane immediately after this completes.
 async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> {
@@ -1172,6 +1217,8 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                     articles: 0,
                     total: 0,
                     error: Some(e),
+                    changed: Vec::new(),
+                    removed: Vec::new(),
                 }
             }
         };
@@ -1182,6 +1229,8 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                 articles: 0,
                 total: 0,
                 error: Some("找不到该订阅源".to_string()),
+                changed: Vec::new(),
+                removed: Vec::new(),
             };
         };
         let account = data.accounts.iter().find(|a| a.id == feed.account_id).cloned();
@@ -1193,6 +1242,8 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
         articles: 0,
         total: 0,
         error: None,
+        changed: Vec::new(),
+        removed: Vec::new(),
     };
     let mut added = 0usize;
 
@@ -1235,12 +1286,14 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                         last_modified,
                     } => {
                         result.total = parsed.items.len();
+                        let before = flag_snapshot(&data, &feed.id);
                         for item in &parsed.items {
                             let article = article_from_parsed(account.id, &feed, item);
                             if upsert_article(&mut data, article) {
                                 added += 1;
                             }
                         }
+                        collect_changes(&data, &feed.id, &before, &mut result.changed);
                         if let Some(stored) = data.feeds.iter_mut().find(|f| f.id == feed.id) {
                             stored.title = parsed.title.clone();
                             stored.website = parsed.site_url.clone();
@@ -1291,6 +1344,7 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                 let remote_ids: std::collections::HashSet<String> =
                     items.iter().map(|item| item.id.clone()).collect();
                 let mut data = state.lock()?;
+                let before = flag_snapshot(&data, &feed.id);
                 for item in &items {
                     let article = article_from_greader(account.id, &feed.id, item);
                     if upsert_article_synced(&mut data, article, Some(&pending_ids)) {
@@ -1298,9 +1352,17 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                     }
                 }
                 if complete {
-                    data.articles
-                        .retain(|a| a.feed_id != feed.id || remote_ids.contains(&a.remote_id));
+                    let mut removed_now = Vec::new();
+                    data.articles.retain(|a| {
+                        let keep = a.feed_id != feed.id || remote_ids.contains(&a.remote_id);
+                        if !keep {
+                            removed_now.push(a.id.clone());
+                        }
+                        keep
+                    });
+                    result.removed = removed_now;
                 }
+                collect_changes(&data, &feed.id, &before, &mut result.changed);
                 if let Some(stored) = data.feeds.iter_mut().find(|f| f.id == feed.id) {
                     stored.last_synced = Some(now.clone());
                     if complete || stored.last_full_sync.is_none() {
@@ -2240,5 +2302,43 @@ mod tests {
             "第二次请求必须带上 If-None-Match：{seen:?}"
         );
         server.join().ok();
+    }
+
+    #[test]
+    fn sync_reports_only_new_and_flag_changed_rows() {
+        let mk = |id: &str, feed: &str, read: bool| Article {
+            id: id.to_string(),
+            feed_id: feed.to_string(),
+            title: format!("t-{id}"),
+            is_read: read,
+            ..Article::default()
+        };
+        let mut data = AppData {
+            articles: vec![mk("a1", "f1", true), mk("a2", "f1", false), mk("b1", "f2", false)],
+            ..AppData::default()
+        };
+
+        let before = flag_snapshot(&data, "f1");
+        assert_eq!(before.len(), 2, "快照只覆盖本订阅源");
+
+        // One brand-new unread row, plus a read-flag flip on an existing row.
+        data.articles.push(mk("a3", "f1", false));
+        data.articles[1].is_read = true;
+
+        let mut changed = Vec::new();
+        collect_changes(&data, "f1", &before, &mut changed);
+
+        let mut ids: Vec<&str> = changed.iter().map(|a| a.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["a2", "a3"],
+            "只有新增行和标记变化的行需要回传给界面"
+        );
+        // The untouched row and the other feed's row must stay out of the diff.
+        assert!(!ids.contains(&"a1"));
+        assert!(!ids.contains(&"b1"));
+        assert!(changed.iter().find(|a| a.id == "a2").unwrap().is_read);
+        assert!(!changed.iter().find(|a| a.id == "a3").unwrap().is_read);
     }
 }

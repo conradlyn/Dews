@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import rssIcon from "./assets/rss.png";
 import ArticleList from "./components/ArticleList";
@@ -7,7 +8,15 @@ import Icon from "./components/icons";
 import FeedPane from "./components/FeedPane";
 import ReadingPane from "./components/ReadingPane";
 import SettingsDialog from "./components/SettingsDialog";
-import type { AppData, AppSettings, Article, FeedCheck, Scope, SyncPlan } from "./types";
+import type {
+  AppData,
+  AppSettings,
+  Article,
+  FeedCheck,
+  FeedSyncResult,
+  Scope,
+  SyncPlan,
+} from "./types";
 import "./styles.css";
 
 type Dialog = "settings" | "addFeed" | null;
@@ -15,6 +24,9 @@ type Dialog = "settings" | "addFeed" | null;
 /// Number of feeds fetched in parallel. High enough to hide per-request
 /// latency, low enough not to flood a self-hosted FreshRSS instance.
 const SYNC_CONCURRENCY = 6;
+
+/// Emitted by the Windows tray menu ("设置…").
+const OPEN_SETTINGS_EVENT = "dews://open-settings";
 
 type SyncStage = "subscriptions" | "articles" | "done";
 interface SyncState {
@@ -129,6 +141,65 @@ export default function App() {
   const refresh = useCallback(async () => {
     const fresh = await api.bootstrap();
     setData((prev) => (prev ? { ...fresh, settings: prev.settings } : fresh));
+  }, []);
+
+  // Fold one feed's sync outcome into the local copy. This is what makes the
+  // unread counters and the list move while the remaining feeds are still
+  // downloading, instead of jumping once at the very end.
+  const applyFeedSync = useCallback((result: FeedSyncResult) => {
+    if (result.changed.length === 0 && result.removed.length === 0) return;
+    setData((prev) => {
+      if (!prev) return prev;
+      const removed = new Set(result.removed);
+      const changedById = new Map(result.changed.map((a) => [a.id, a] as const));
+      const replaced = new Set<string>();
+      const articles = prev.articles
+        .filter((a) => !removed.has(a.id))
+        .map((a) => {
+          const next = changedById.get(a.id);
+          if (!next) return a;
+          replaced.add(a.id);
+          return next;
+        });
+      // Rows the library did not have yet are appended; the list re-sorts by
+      // published time downstream.
+      for (const article of result.changed) {
+        if (!replaced.has(article.id)) articles.push(article);
+      }
+      return { ...prev, articles };
+    });
+  }, []);
+
+  const unreadTotal = useMemo(
+    () => (data ? data.articles.reduce((n, a) => (a.is_read ? n : n + 1), 0) : 0),
+    [data?.articles],
+  );
+
+  // Keep the Dock badge / taskbar overlay in step with the visible count. The
+  // UI owns this number because it also covers optimistic read/star updates
+  // that never reach the server.
+  useEffect(() => {
+    void api.setUnreadBadge(unreadTotal).catch(() => {
+      /* cosmetic only: a failed badge must never surface as an error toast */
+    });
+  }, [unreadTotal]);
+
+  // The Windows tray menu asks the UI to open the settings dialog.
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void listen(OPEN_SETTINGS_EVENT, () => setDialog("settings"))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else dispose = unlisten;
+      })
+      .catch(() => {
+        /* running outside the Tauri shell */
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
   }, []);
 
   const articles = useMemo(() => {
@@ -511,6 +582,9 @@ export default function App() {
             try {
               const result = await api.syncFeedArticles(feed.id);
               totalArticles += result.articles;
+              // Publish this feed immediately so its unread count appears
+              // while the other workers are still running.
+              applyFeedSync(result);
               if (result.error) errors.push(`${feed.title}：${result.error}`);
             } catch (e) {
               errors.push(`${feed.title}：${String(e)}`);
@@ -557,7 +631,7 @@ export default function App() {
         window.setTimeout(() => setSyncState(null), 2600);
       }
     },
-    [notify, refresh],
+    [notify, refresh, applyFeedSync],
   );
 
   useEffect(() => {

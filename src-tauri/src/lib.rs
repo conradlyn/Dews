@@ -1,17 +1,30 @@
 // dews — desktop RSS reader. Ported data layer (Fever deliberately absent) + command bridge.
 pub mod commands;
 pub mod data;
+pub mod desktop;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(commands::AppState::new())
+        .setup(|_app| {
+            // The tray exists only on Windows: macOS uses the Dock icon, which
+            // is already the platform convention for a hidden window.
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = desktop::setup_tray(_app.handle()) {
+                    eprintln!("创建系统托盘失败：{e}");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap,
             commands::save_settings,
             commands::get_fonts,
             commands::is_portable,
+            commands::set_unread_badge,
             commands::search_articles,
             commands::get_article_html,
             commands::fetch_full_text,
@@ -35,6 +48,7 @@ pub fn run() {
             commands::delete_account,
             commands::open_external,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(desktop::handle_run_event);
 }

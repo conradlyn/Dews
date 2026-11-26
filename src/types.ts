@@ -118,6 +118,10 @@ export interface FeedSyncResult {
   articles: number;
   total: number;
   error: string | null;
+  /** Rows inserted or whose read/starred flags moved during this pass. */
+  changed: Article[];
+  /** Article ids the server no longer has. */
+  removed: string[];
 }
 
 export interface MarkReadReport {

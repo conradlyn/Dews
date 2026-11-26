@@ -99,7 +99,7 @@ jobs:
           $stage = "portable-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/dews.exe" -Destination $stage
-          $zip = "dews_1.0.1_portable.zip"
+          $zip = "dews_1.1.0_portable.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
           Write-Host "Created $zip"
 
@@ -139,7 +139,7 @@ jobs:
       - name: Create dmg with hdiutil
         run: |
           APP="src-tauri/target/release/bundle/macos/dews.app"
-          DMG="src-tauri/target/release/bundle/dmg/dews_1.0.1_aarch64.dmg"
+          DMG="src-tauri/target/release/bundle/dmg/dews_1.1.0_aarch64.dmg"
           mkdir -p "$(dirname "$DMG")"
           hdiutil create -volname "dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
           hdiutil verify "$DMG"
