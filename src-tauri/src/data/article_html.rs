@@ -182,11 +182,11 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
   overflow: hidden;
   font-size: 12.5px;
   line-height: 1.5;
+  /* The panel and the pill differ only in width, so the whole open/close
+     motion is one interpolable value — no display toggling involved. */
+  transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 200ms ease;
 }
-.dews-toc.collapsed { width: auto; }
-.dews-toc.collapsed .dews-toc-list,
-.dews-toc.collapsed .dews-toc-title { display: none; }
-.dews-toc.collapsed .dews-toc-toggle { padding: 6px 9px; }
+.dews-toc.collapsed { width: 40px; }
 .dews-toc-toggle {
   display: flex;
   align-items: center;
@@ -198,17 +198,33 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
   color: var(--muted);
   font: inherit;
   cursor: pointer;
+  transition: padding 200ms ease;
 }
 .dews-toc-toggle:hover { color: var(--fg); }
+.dews-toc.collapsed .dews-toc-toggle { padding: 6px 9px; }
 .dews-toc-icon { font-size: 14px; line-height: 1; }
+.dews-toc-title {
+  white-space: nowrap;
+  transition: opacity 120ms ease;
+}
+.dews-toc.collapsed .dews-toc-title { opacity: 0; }
 .dews-toc-list {
   margin: 0;
   padding: 0 8px 8px;
   list-style: none;
   overflow-y: auto;
   max-height: calc(100vh - 76px);
+  opacity: 1;
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) transparent;
+  transition: opacity 140ms ease, max-height 200ms ease, padding 200ms ease;
+}
+.dews-toc.collapsed .dews-toc-list {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
 }
 .dews-toc-item { margin: 1px 0; }
 .dews-toc-item a {
@@ -306,11 +322,26 @@ const TOC_JS: &str = r##"<script>
   nav.appendChild(list);
   document.body.appendChild(nav);
 
+  var openedByUser = false;
+  var leaveTimer = 0;
+
   function setCollapsed(value) {
     nav.classList.toggle("collapsed", value);
+    if (value) openedByUser = false;
   }
   toggle.addEventListener("click", function () {
-    setCollapsed(!nav.classList.contains("collapsed"));
+    var collapse = !nav.classList.contains("collapsed");
+    setCollapsed(collapse);
+    openedByUser = !collapse;
+  });
+  // Moving the pointer away closes an outline the reader opened by hand. In
+  // `auto` mode the panel is expanded on purpose, so it stays open; the short
+  // delay keeps a graze across the edge from closing it.
+  nav.addEventListener("mouseenter", function () { clearTimeout(leaveTimer); });
+  nav.addEventListener("mouseleave", function () {
+    if (!openedByUser) return;
+    clearTimeout(leaveTimer);
+    leaveTimer = setTimeout(function () { setCollapsed(true); }, 220);
   });
   // `auto` expands only when the outline fits beside the 800px text column
   // (208px panel + 20px inset + a 12px gap); `button` always starts collapsed.
