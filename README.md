@@ -1,6 +1,14 @@
-# dews
+# Dews
 
-一个跨平台的桌面 RSS 阅读器，使用 Tauri 2 + React + TypeScript + Rust 构建，通过 Google Reader / FreshRSS 兼容协议同步。
+一个Mac和Windows平台一致的桌面 RSS 阅读器，使用 Tauri 2 + React + TypeScript + Rust 构建，通过 Google Reader / FreshRSS 兼容协议同步。
+
+## 缘由
+
+我从RSS诞生那一天开始使用这个技术，至今已经用了20几年。一路用过各种桌面RSS阅读器，最怀念的还是早年Windows平台下的GreatNews。后来很喜欢Mac和iOS版本的Reeder，但自从Reeder发了2版本后，就再不用了，而且它有很多设计/设置很不易于理解，不全是我想要的。更重要的是，Windows和Mac两个平台不能有一致的体验很难受（不用谈网页版，网页版是最难用的客户端）。
+
+现在，FreshRSS和AI的发展，终于让我可以自己造一个完全适合自己需求的软件。
+
+这个软件全由AI制造，我没有改过一个代码字母。包括下面的内容都是AI写的。
 
 ## 功能
 
