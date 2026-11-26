@@ -1,13 +1,21 @@
 import { useRef, useState } from "react";
 import { api } from "../api";
-import type { Account, AccountKind, AppSettings, Feed, FeedGroup } from "../types";
+import type {
+  Account,
+  AccountKind,
+  AppSettings,
+  Feed,
+  FeedGroup,
+  UpdateState,
+} from "../types";
 
-type Category = "appearance" | "sync" | "data";
+type Category = "appearance" | "sync" | "data" | "about";
 
 const CATEGORIES: { id: Category; label: string }[] = [
   { id: "appearance", label: "外观与字体" },
   { id: "sync", label: "账户与同步" },
   { id: "data", label: "导入与导出" },
+  { id: "about", label: "关于" },
 ];
 
 const KINDS: { value: AccountKind; label: string }[] = [
@@ -33,6 +41,10 @@ interface Props {
   onSetFeedGroup: (feedId: string, groupId: string | null) => Promise<void>;
   onImportOpml: (file: File) => void;
   onExportOpml: () => void;
+  version: string;
+  update: UpdateState;
+  onCheckUpdate: () => void;
+  onInstallUpdate: () => void;
   notify: (message: string, error?: boolean) => void;
   onClose: () => void;
 }
@@ -75,6 +87,10 @@ export default function SettingsDialog({
   onSetFeedGroup,
   onImportOpml,
   onExportOpml,
+  version,
+  update,
+  onCheckUpdate,
+  onInstallUpdate,
   notify,
   onClose,
 }: Props) {
@@ -685,6 +701,73 @@ export default function SettingsDialog({
                       }}
                     />
                   </div>
+                </>
+              )}
+
+              {category === "about" && (
+                <>
+                  <label>版本</label>
+                  <div className="about-card">
+                    <span className="about-name">Dews</span>
+                    <span className="about-version">v{version || "—"}</span>
+                  </div>
+                  <p className="about-hint">
+                    更新包来自 GitHub Releases，下载后校验签名并替换当前版本。
+                  </p>
+
+                  <label>更新</label>
+                  <div className="field-row">
+                    <button
+                      className="tool-btn"
+                      disabled={
+                        update.status === "checking" ||
+                        update.status === "downloading" ||
+                        update.status === "installing"
+                      }
+                      onClick={onCheckUpdate}
+                    >
+                      {update.status === "checking" ? "检查中…" : "检查更新"}
+                    </button>
+                    {update.status === "available" && (
+                      <button className="tool-btn primary" onClick={onInstallUpdate}>
+                        更新到 v{update.version}
+                      </button>
+                    )}
+                  </div>
+
+                  {update.status === "downloading" && (
+                    <div className="update-progress">
+                      <div className="update-track">
+                        <div
+                          className="update-fill"
+                          style={{
+                            width: `${Math.round((update.progress ?? 0) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="update-percent">
+                        {update.progress === undefined
+                          ? "下载中…"
+                          : `${Math.round(update.progress * 100)}%`}
+                      </span>
+                    </div>
+                  )}
+
+                  <p className={`update-status ${update.status}`}>
+                    {update.status === "idle" && "尚未检查更新。"}
+                    {update.status === "checking" && "正在检查 GitHub 上的最新版本…"}
+                    {update.status === "latest" && "当前已是最新版本。"}
+                    {update.status === "available" &&
+                      `发现新版本 v${update.version}${update.date ? `（${update.date.slice(0, 10)} 发布）` : ""}。`}
+                    {update.status === "downloading" && "正在下载更新包…"}
+                    {update.status === "installing" && "正在安装，完成后会自动重启。"}
+                    {update.status === "error" &&
+                      `检查更新失败：${update.message ?? "未知错误"}`}
+                  </p>
+
+                  {update.status === "available" && update.notes && (
+                    <pre className="update-notes">{update.notes}</pre>
+                  )}
                 </>
               )}
             </div>

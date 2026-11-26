@@ -858,3 +858,92 @@ body.splitter-idle .splitter { cursor: default !important; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- 关于 / 应用内更新 ---- */
+.tool-btn.has-update { position: relative; }
+.update-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1d9bf0;
+  /* Ring keeps the dot legible against the button's own grey fill. */
+  box-shadow: 0 0 0 2px var(--btn-bg);
+  pointer-events: none;
+}
+.about-card {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--pane-bg);
+}
+.about-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--fg);
+}
+.about-version {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.about-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.update-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--btn-bg);
+  overflow: hidden;
+}
+.update-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.update-percent {
+  min-width: 52px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.update-status {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.update-status.available { color: var(--active-fg); }
+.update-status.error { color: var(--danger); }
+.update-notes {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--pane-bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

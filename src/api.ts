@@ -19,6 +19,8 @@ export const api = {
   isPortable: () => invoke<boolean>("is_portable"),
   /** Dock badge (macOS) / taskbar star overlay (Windows). 0 clears it. */
   setUnreadBadge: (count: number) => invoke<void>("set_unread_badge", { count }),
+  /** Relaunch into the freshly installed build (macOS needs this). */
+  restartApp: () => invoke<void>("restart_app"),
 
   searchArticles: (query: string) => invoke<string[]>("search_articles", { query }),
   getArticleHtml: (id: string, settings?: AppSettings) =>

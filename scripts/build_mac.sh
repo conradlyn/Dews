@@ -15,8 +15,8 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLE="$ROOT/src-tauri/target/release/bundle"
-APP="$BUNDLE/macos/dews.app"
-DMG="$BUNDLE/dmg/dews_1.1.0_aarch64.dmg"
+APP="$BUNDLE/macos/Dews.app"
+DMG="$BUNDLE/dmg/Dews_1.1.0_aarch64.dmg"
 
 cd "$ROOT"
 npx tauri build --bundles app
@@ -27,7 +27,7 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 mkdir -p "$(dirname "$DMG")"
-hdiutil create -volname "dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
+hdiutil create -volname "Dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
 
 echo "Built:"
 echo "  $APP"

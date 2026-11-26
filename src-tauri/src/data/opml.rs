@@ -96,7 +96,7 @@ pub fn export(feeds: &[Feed], groups: &[FeedGroup]) -> String {
     body.push_str("</body>");
 
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?><opml version=\"2.0\"><head><title>dews 订阅导出</title></head>{body}</opml>"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><opml version=\"2.0\"><head><title>Dews 订阅导出</title></head>{body}</opml>"
     )
 }
 

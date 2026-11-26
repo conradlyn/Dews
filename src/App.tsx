@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { api } from "./api";
 import rssIcon from "./assets/rss.png";
 import ArticleList from "./components/ArticleList";
@@ -16,6 +19,7 @@ import type {
   FeedSyncResult,
   Scope,
   SyncPlan,
+  UpdateState,
 } from "./types";
 import "./styles.css";
 
@@ -58,6 +62,11 @@ export default function App() {
   const [feedCheck, setFeedCheck] = useState<{ url: string; result: FeedCheck } | null>(null);
   const [checkingFeed, setCheckingFeed] = useState(false);
   const [confirmFeedId, setConfirmFeedId] = useState<string | null>(null);
+  const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<UpdateState>({ status: "idle" });
+  // The plugin's Update handle owns a Rust-side resource, so it cannot live in
+  // React state; only its serialisable description does.
+  const pendingUpdate = useRef<Update | null>(null);
   // All splitter drag state lives in refs so no re-render can tear down the
   // active drag. `dragging` only drives the visual highlight.
   type DragState = {
@@ -201,6 +210,72 @@ export default function App() {
       dispose?.();
     };
   }, []);
+
+  // ---- 更新检查 -----------------------------------------------------------
+  useEffect(() => {
+    void getVersion()
+      .then(setVersion)
+      .catch(() => {
+        /* the version is only displayed in the About pane */
+      });
+  }, []);
+
+  const runUpdateCheck = useCallback(async (manual: boolean) => {
+    setUpdate((prev) => ({ ...prev, status: "checking", message: undefined }));
+    try {
+      const found = await checkForUpdate({ timeout: 15000 });
+      if (!found) {
+        pendingUpdate.current = null;
+        setUpdate({ status: "latest" });
+        return;
+      }
+      pendingUpdate.current = found;
+      setUpdate({
+        status: "available",
+        version: found.version,
+        notes: found.body ?? undefined,
+        date: found.date ?? undefined,
+      });
+    } catch (e) {
+      // An automatic check stays silent: launching the app offline is not an
+      // error worth interrupting the user for.
+      setUpdate(manual ? { status: "error", message: String(e) } : { status: "idle" });
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    const found = pendingUpdate.current;
+    if (!found) return;
+    let total = 0;
+    let received = 0;
+    setUpdate((prev) => ({ ...prev, status: "downloading", progress: 0 }));
+    try {
+      await found.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          received += event.data.chunkLength;
+          setUpdate((prev) => ({
+            ...prev,
+            status: "downloading",
+            progress: total > 0 ? Math.min(1, received / total) : undefined,
+          }));
+        } else {
+          setUpdate((prev) => ({ ...prev, status: "installing", progress: 1 }));
+        }
+      });
+      // Windows hands over to the installer and exits on its own; macOS only
+      // swaps the bundle on disk, so the new build has to be started here.
+      await api.restartApp();
+    } catch (e) {
+      setUpdate((prev) => ({ ...prev, status: "error", message: String(e) }));
+    }
+  }, []);
+
+  // One check at startup so the settings entry can advertise a new release.
+  useEffect(() => {
+    void runUpdateCheck(false);
+  }, [runUpdateCheck]);
 
   const articles = useMemo(() => {
     if (!data) return [];
@@ -728,7 +803,7 @@ export default function App() {
   };
 
   if (!data) {
-    return <div className="loading">正在加载 dews…</div>;
+    return <div className="loading">正在加载 Dews…</div>;
   }
 
   const settings = data.settings;
@@ -746,7 +821,7 @@ export default function App() {
       <header className="toolbar">
         <div className="brand">
           <img className="brand-mark" src={rssIcon} alt="" />
-          <span>dews</span>
+          <span>Dews</span>
         </div>
         <button
           className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
@@ -781,12 +856,19 @@ export default function App() {
           {activeAccount?.name || "本地账户"}
         </span>
         <button
-          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}`}
+          className={`tool-btn quiet${compactButtons ? " icon-only" : ""}${update.status === "available" ? " has-update" : ""}`}
           onClick={() => setDialog("settings")}
-          title="设置"
+          title={
+            update.status === "available"
+              ? `设置（可更新到 v${update.version}）`
+              : "设置"
+          }
         >
           <Icon name="settings" size={14} />
           {!compactButtons && <span>设置</span>}
+          {update.status === "available" && (
+            <span className="update-dot" aria-label="有新版本" />
+          )}
         </button>
       </header>
 
@@ -901,6 +983,10 @@ export default function App() {
           }}
           onImportOpml={(file) => void importOpml(file)}
           onExportOpml={() => void exportOpml()}
+          version={version}
+          update={update}
+          onCheckUpdate={() => void runUpdateCheck(true)}
+          onInstallUpdate={() => void installUpdate()}
           notify={notify}
           onClose={() => setDialog(null)}
         />

@@ -225,6 +225,14 @@ pub fn set_unread_badge(count: usize, app: tauri::AppHandle) {
     crate::desktop::set_badge(&app, count);
 }
 
+/// Relaunch after an update was installed. The macOS updater only swaps the
+/// bundle on disk, so the running process has to start the new build itself.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    crate::desktop::mark_quitting();
+    app.restart();
+}
+
 /// Full-text search runs in Rust so the UI never has to receive article bodies.
 #[tauri::command]
 pub fn search_articles(query: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {

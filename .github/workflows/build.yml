@@ -56,6 +56,9 @@ jobs:
           }
 
       - name: Build installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles nsis,msi
 
       - name: Upload installers
@@ -65,6 +68,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
           if-no-files-found: error
 
   windows-portable:
@@ -98,8 +102,8 @@ jobs:
         run: |
           $stage = "portable-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "src-tauri/target/release/dews.exe" -Destination $stage
-          $zip = "dews_1.1.0_portable.zip"
+          Copy-Item "src-tauri/target/release/dews.exe" -Destination "$stage\Dews.exe"
+          $zip = "Dews_1.1.0_portable.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
           Write-Host "Created $zip"
 
@@ -107,7 +111,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dews-windows-portable
-          path: dews_*_portable.zip
+          path: Dews_*_portable.zip
           if-no-files-found: error
 
   macos-dmg:
@@ -134,21 +138,27 @@ jobs:
           workspaces: src-tauri
 
       - name: Build app bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles app
 
       - name: Create dmg with hdiutil
         run: |
-          APP="src-tauri/target/release/bundle/macos/dews.app"
-          DMG="src-tauri/target/release/bundle/dmg/dews_1.1.0_aarch64.dmg"
+          APP="src-tauri/target/release/bundle/macos/Dews.app"
+          DMG="src-tauri/target/release/bundle/dmg/Dews_1.1.0_aarch64.dmg"
           mkdir -p "$(dirname "$DMG")"
-          hdiutil create -volname "dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          hdiutil create -volname "Dews" -srcfolder "$APP" -ov -format UDZO "$DMG"
           hdiutil verify "$DMG"
 
       - name: Upload dmg
         uses: actions/upload-artifact@v4
         with:
           name: dews-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   release:
@@ -164,12 +174,63 @@ jobs:
         with:
           path: artifacts
 
+      # Re-publishing the same version (e.g. after a rename) must not leave the
+      # previous asset names behind: the release is recreated from scratch.
+      - name: Drop previous release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "${{ github.ref_name }}" --yes || true
+
+      # The updater reads this manifest from the `latest` release alias. It must
+      # list the signed archive for each platform plus the signature itself.
+      - name: Build updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, glob, json, os, pathlib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          app_sig = glob.glob("artifacts/**/*.app.tar.gz.sig", recursive=True)[0]
+          win_sig = glob.glob("artifacts/**/*-setup.exe.sig", recursive=True)[0]
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+
+          def read(path):
+              return pathlib.Path(path).read_text().strip()
+
+          manifest = {
+              "version": tag.lstrip("v"),
+              "notes": "",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc)
+                  .replace(microsecond=0)
+                  .isoformat()
+                  .replace("+00:00", "Z"),
+              "platforms": {
+                  "darwin-aarch64": {
+                      "signature": read(app_sig),
+                      "url": f"{base}/{pathlib.Path(app_sig).name[:-4]}",
+                  },
+                  "windows-x86_64": {
+                      "signature": read(win_sig),
+                      "url": f"{base}/{pathlib.Path(win_sig).name[:-4]}",
+                  },
+              },
+          }
+          pathlib.Path("latest.json").write_text(json.dumps(manifest, indent=2))
+          print(pathlib.Path("latest.json").read_text())
+          PY
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/**/*.msi
             artifacts/**/*-setup.exe
+            artifacts/**/*-setup.exe.sig
             artifacts/**/*_portable.zip
             artifacts/**/*.dmg
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.app.tar.gz.sig
+            latest.json
           generate_release_notes: true

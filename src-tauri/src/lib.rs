@@ -1,4 +1,4 @@
-// dews — desktop RSS reader. Ported data layer (Fever deliberately absent) + command bridge.
+// Dews — desktop RSS reader. Ported data layer (Fever deliberately absent) + command bridge.
 pub mod commands;
 pub mod data;
 pub mod desktop;
@@ -7,6 +7,7 @@ pub mod desktop;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::AppState::new())
         .setup(|_app| {
             // The tray exists only on Windows: macOS uses the Dock icon, which
@@ -25,6 +26,7 @@ pub fn run() {
             commands::get_fonts,
             commands::is_portable,
             commands::set_unread_badge,
+            commands::restart_app,
             commands::search_articles,
             commands::get_article_html,
             commands::fetch_full_text,

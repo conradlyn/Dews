@@ -27,6 +27,7 @@
 - 未读总数显示在应用图标上：macOS 为 Dock 数字徽标，Windows 为任务栏图标上的星形角标
 - 关闭窗口只是隐藏而不退出：macOS 点击 Dock 图标恢复、Cmd+Q 或 Dock 右键退出；Windows 常驻系统托盘，右键菜单含显示窗口 / 最小化到托盘 / 最大化还原 / 设置 / 退出，双击托盘图标恢复
 - 便携模式：exe 所在目录可写（或已有 `./data`）时自动启用，无需 `portable` 空文件；也可用 `DEWS_DATA_DIR` 显式指定数据目录
+- 应用内更新：启动时静默检查 GitHub Release，发现新版本时「设置」按钮出现提示点；「设置 → 关于」可手动检查、查看发布说明，点「更新到 vX.Y.Z」即下载安装并自动重启
 
 ## 数据存放
 
@@ -62,10 +63,19 @@ macOS 本地一键构建（`.app` + `.dmg`）：
 `.github/workflows/build.yml` 在推送 `main`、`local/**` 分支、推送 `v*` 标签、PR 或手动触发时构建三类产物，并在 Actions 页面以 artifact 形式提供下载。推送 `v*` 标签时，还会自动创建 GitHub Release 并附上全部产物：
 
 - Windows 安装版：NSIS（`*-setup.exe`）与 MSI
-- Windows 便携版：`dews_*_portable.zip`（含 `dews.exe`，首次运行自动生成 `./data`）
-- macOS：`dews_1.1.0_aarch64.dmg`（arm64）
+- Windows 便携版：`Dews_*_portable.zip`（含 `Dews.exe`，首次运行自动生成 `./data`）
+- macOS：`Dews_1.1.0_aarch64.dmg`（arm64）
 
 macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环境下的 `grep` 兼容问题。当前构建为 ad-hoc 签名，对外分发仍需 Developer ID 签名与公证。
+
+### 自动更新的签名密钥
+
+更新包用 minisign 密钥签名，公钥写在 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey` 里。`bundle.createUpdaterArtifacts` 为 `true`，因此构建时必须能拿到私钥，否则打包会直接失败：
+
+- 本地：`export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dews-updater.key)"`（无密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 留空）
+- CI：在仓库 Settings → Secrets 添加 `TAURI_SIGNING_PRIVATE_KEY`（私钥文件全文）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（无密码时留空或不加）
+
+私钥不要提交到仓库。发布 `v*` 标签时，工作流会先删掉同名 Release，再上传 `.app.tar.gz`、`*-setup.exe` 及其 `.sig`，并用脚本生成 `latest.json` 清单；客户端从 `https://github.com/conradlyn/Dews/releases/latest/download/latest.json` 读取它。
 
 ## 测试
 

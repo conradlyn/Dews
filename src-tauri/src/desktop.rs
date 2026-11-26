@@ -190,7 +190,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     )?;
 
     let mut builder = TrayIconBuilder::with_id("main")
-        .tooltip("dews")
+        .tooltip("Dews")
         .menu(&menu)
         // Left click is reserved for double-click-to-restore; only the right
         // click opens the menu.
@@ -245,9 +245,9 @@ fn update_tray_tooltip<R: Runtime>(app: &AppHandle<R>, unread: usize) {
         return;
     };
     let text = if unread > 0 {
-        format!("dews — {unread} 篇未读")
+        format!("Dews — {unread} 篇未读")
     } else {
-        "dews".to_string()
+        "Dews".to_string()
     };
     let _ = tray.set_tooltip(Some(&text));
 }

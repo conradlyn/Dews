@@ -143,3 +143,24 @@ export type Scope =
   | { type: "starred" }
   | { type: "feed"; id: string }
   | { type: "group"; id: string };
+
+/** Lifecycle of the in-app update check, driven by the Tauri updater plugin. */
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "latest"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "error";
+
+export interface UpdateState {
+  status: UpdateStatus;
+  /** Version announced by the release manifest, when one is available. */
+  version?: string;
+  notes?: string;
+  date?: string;
+  /** 0..1 while downloading; undefined when the server sends no length. */
+  progress?: number;
+  message?: string;
+}

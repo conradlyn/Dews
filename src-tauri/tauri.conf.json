@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dews",
+  "productName": "Dews",
   "version": "1.1.0",
   "identifier": "com.lfk.dews",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "dews",
+        "title": "Dews",
         "width": 1440,
         "height": 900,
         "minWidth": 900,
@@ -33,6 +33,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/conradlyn/Dews/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwNjBCQUI2NjkxRkRFRjIKUldUeTNoOXB0cnBnVUVubDR5MlRDT2tsSjhlOVpLeWFMbCtoTXFKRXFEeFpRaC9mUXpCcFV2VE8K"
+    }
   }
 }
