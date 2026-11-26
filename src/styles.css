@@ -894,6 +894,9 @@ body.splitter-idle .splitter { cursor: default !important; }
   font-variant-numeric: tabular-nums;
 }
 .about-hint {
+  /* Hints explain the control above them, so they span both grid columns
+     instead of being squeezed into the 150px label column. */
+  grid-column: 1 / -1;
   margin: 0;
   color: var(--muted);
   font-size: 12px;
