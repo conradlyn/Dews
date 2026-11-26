@@ -1,7 +1,10 @@
 //! Enumerate fonts installed on the machine for the three font pickers.
 //! Windows keeps the human-readable family names in the registry Fonts key;
 //! HKLM covers system fonts, HKCU covers per-user installed fonts.
-//! macOS walks the standard font directories and uses file stems as family names.
+//! macOS asks CoreText for the available family names. Reading the font
+//! directories instead would hand out file stems — "STHeiti Medium" rather
+//! than "Heiti SC" — which CSS cannot match, so the text silently fell back
+//! to the default font.
 
 /// Fallback list used when the registry cannot be read (or on non-Windows).
 pub fn fallback_fonts() -> Vec<String> {
@@ -123,35 +126,19 @@ fn from_key(root: isize, subkey: &str) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn from_directories() -> Vec<String> {
-    use std::fs;
-    use std::path::PathBuf;
+fn from_core_text() -> Vec<String> {
+    use core_text::font_manager::copy_available_font_family_names;
 
-    let mut dirs = vec![
-        PathBuf::from("/System/Library/Fonts"),
-        PathBuf::from("/Library/Fonts"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Library/Fonts"));
-    }
-
-    let mut names = Vec::new();
-    for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
-            if !matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "dfont") {
-                continue;
-            }
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if !stem.is_empty() && stem.len() <= 120 {
-                    names.push(stem.to_string());
-                }
-            }
-        }
-    }
-    names
+    // These are the names the system font matcher itself uses, so whatever the
+    // picker shows is guaranteed to resolve in CSS.
+    copy_available_font_family_names()
+        .iter()
+        .map(|name| name.to_string())
+        .filter(|name| {
+            let trimmed = name.trim();
+            !trimmed.is_empty() && trimmed.chars().count() <= 120
+        })
+        .collect()
 }
 
 pub fn system_fonts() -> Vec<String> {
@@ -163,8 +150,13 @@ pub fn system_fonts() -> Vec<String> {
         fonts.extend(from_key(1, FONTS_KEY));
     }
     #[cfg(target_os = "macos")]
-    fonts.extend(from_directories());
-    fonts.extend(fallback_fonts());
+    fonts.extend(from_core_text());
+    // The built-in list is a Windows safety net. On macOS every entry is a
+    // font that is not installed, and picking one silently fell back to the
+    // default, so it is only used when the platform returned nothing at all.
+    if fonts.is_empty() {
+        fonts.extend(fallback_fonts());
+    }
     fonts.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     fonts.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     fonts
@@ -175,14 +167,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fallback_contains_chinese_fonts() {
-        let fonts = system_fonts();
+    fn fallback_list_contains_chinese_fonts() {
+        let fonts = fallback_fonts();
         assert!(fonts.iter().any(|f| f == "Microsoft YaHei"));
         assert!(fonts.iter().any(|f| f == "SimSun"));
-        assert!(fonts.windows(2).all(|w| w[0] != w[1]));
         #[cfg(windows)]
         assert!(tidy("Arial (TrueType)").is_some());
+    }
+
+    #[test]
+    fn system_fonts_are_sorted_and_unique() {
+        let fonts = system_fonts();
+        assert!(!fonts.is_empty());
+        assert!(fonts.windows(2).all(|w| w[0] != w[1]));
+        // Helvetica ships with every macOS install and can only appear through
+        // CoreText, so its presence proves the family-name path ran.
         #[cfg(target_os = "macos")]
-        assert!(fonts.iter().any(|f| f == "PingFang SC"));
+        assert!(
+            fonts.iter().any(|f| f.eq_ignore_ascii_case("helvetica")),
+            "CoreText enumeration returned no Helvetica: {:?}",
+            &fonts[..fonts.len().min(10)]
+        );
+        // Windows-only fonts must not be offered on macOS: picking them fell
+        // back to the default instead of applying anything.
+        #[cfg(target_os = "macos")]
+        assert!(!fonts.iter().any(|f| f == "Microsoft YaHei"));
     }
 }

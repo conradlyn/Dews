@@ -184,7 +184,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
   line-height: 1.5;
   /* The panel and the pill differ only in width, so the whole open/close
      motion is one interpolable value — no display toggling involved. */
-  transition: width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 200ms ease;
+  transition: width 360ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 360ms ease;
 }
 .dews-toc.collapsed { width: 40px; }
 .dews-toc-toggle {
@@ -198,16 +198,22 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
   color: var(--muted);
   font: inherit;
   cursor: pointer;
-  transition: padding 200ms ease;
+  transition: padding 360ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .dews-toc-toggle:hover { color: var(--fg); }
-.dews-toc.collapsed .dews-toc-toggle { padding: 6px 9px; }
+.dews-toc.collapsed .dews-toc-toggle {
+  /* Centre the glyph: the title is taken out of the flow while collapsed so it
+     cannot push the icon off-centre, and the row has no gap to distribute. */
+  justify-content: center;
+  gap: 0;
+  padding: 6px 0;
+}
 .dews-toc-icon { font-size: 14px; line-height: 1; }
 .dews-toc-title {
   white-space: nowrap;
-  transition: opacity 120ms ease;
+  transition: opacity 220ms ease;
 }
-.dews-toc.collapsed .dews-toc-title { opacity: 0; }
+.dews-toc.collapsed .dews-toc-title { position: absolute; opacity: 0; }
 .dews-toc-list {
   margin: 0;
   padding: 0 8px 8px;
@@ -217,7 +223,8 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 18px; }
   opacity: 1;
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) transparent;
-  transition: opacity 140ms ease, max-height 200ms ease, padding 200ms ease;
+  transition: opacity 240ms ease, max-height 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding 360ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .dews-toc.collapsed .dews-toc-list {
   max-height: 0;

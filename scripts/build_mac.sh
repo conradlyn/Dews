@@ -16,7 +16,7 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLE="$ROOT/src-tauri/target/release/bundle"
 APP="$BUNDLE/macos/Dews.app"
-DMG="$BUNDLE/dmg/Dews_1.1.2_aarch64.dmg"
+DMG="$BUNDLE/dmg/Dews_1.1.3_aarch64.dmg"
 
 cd "$ROOT"
 npx tauri build --bundles app
