@@ -905,7 +905,10 @@ fn upsert_article(data: &mut AppData, article: Article) -> bool {
     }
 }
 
-const MAX_ARTICLES_PER_FEED: usize = 5000;
+/// Hard ceiling for one full server pass. 1000 keeps the first sync of a
+/// large FreshRSS feed bounded; reaching the cap leaves `complete = false`,
+/// so no local article is deleted — the conservative behaviour is intentional.
+const MAX_ARTICLES_PER_FEED: usize = 1000;
 /// Re-fetch 24 hours of extra history on incremental syncs so backfilled /
 /// late-published articles are not missed.
 const INCREMENTAL_OVERLAP_SECS: i64 = 86400;
@@ -913,6 +916,28 @@ const INCREMENTAL_OVERLAP_SECS: i64 = 86400;
 /// per day so read/star changes made on older items still converge.
 const FULL_RECONCILE_HOURS: i64 = 24;
 const MAX_INCREMENTAL_PER_FEED: usize = 1000;
+
+/// Decide whether a feed needs a full reconciliation pass. Two conditions
+/// force it: the feed has never had an article pass (`last_synced == None`),
+/// or it has never completed a full pass / the last one is older than the
+/// reconcile interval (`last_full_sync` missing or stale). Keeping this as a
+/// pure function makes the first-install behaviour directly testable.
+fn needs_full_sync(
+    last_synced: Option<&str>,
+    last_full_sync: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let parse = |value: Option<&str>| {
+        value
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&chrono::Utc))
+    };
+    let never_synced = parse(last_synced).is_none();
+    let full_due = parse(last_full_sync)
+        .map(|last| now.signed_duration_since(last) >= chrono::Duration::hours(FULL_RECONCILE_HOURS))
+        .unwrap_or(true);
+    never_synced || full_due
+}
 
 /// Insert or update from the server: the server's read/starred flags normally
 /// win. Articles with an unsent local mark keep that flag, and local-only
@@ -999,7 +1024,6 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
             }
         };
 
-        let now = chrono::Utc::now().to_rfc3339();
         {
             let mut data = state.lock()?;
             // Every category reported by the server becomes a group.
@@ -1049,7 +1073,9 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                     feed.remote_id = sub.stream_id.clone();
                     feed.website = website;
                     feed.group_id = group_id;
-                    feed.last_synced = Some(now.clone());
+                    // Do not touch last_synced here: this phase only refreshes
+                    // the subscription tree, and stamping "now" would shrink
+                    // the article phase's incremental window to the overlap.
                     feed.failure_count = 0;
                 } else {
                     data.feeds.push(Feed {
@@ -1060,7 +1086,9 @@ async fn sync_subscriptions_inner(state: &AppState) -> Result<SyncPlan, String> 
                         url: sub.stream_id.clone(),
                         website,
                         group_id,
-                        last_synced: Some(now.clone()),
+                        // First discovery: no article pass has run yet. A full
+                        // reconciliation is required on the first sync.
+                        last_synced: None,
                         last_full_sync: None,
                         etag: None,
                         last_modified: None,
@@ -1242,13 +1270,9 @@ async fn sync_feed_inner(state: &AppState, feed_id: &str) -> FeedSyncResult {
                         .map(|d| d.with_timezone(&chrono::Utc))
                 };
                 let last_sync = parse_ts(feed.last_synced.as_deref());
-                let full_due = parse_ts(feed.last_full_sync.as_deref())
-                    .map(|last| {
-                        chrono::Utc::now().signed_duration_since(last)
-                            >= chrono::Duration::hours(FULL_RECONCILE_HOURS)
-                    })
-                    .unwrap_or(false);
-                let (items, complete) = if full_due || last_sync.is_none() {
+                let full_sync =
+                    needs_full_sync(feed.last_synced.as_deref(), feed.last_full_sync.as_deref(), chrono::Utc::now());
+                let (items, complete) = if full_sync {
                     let all = client
                         .get_stream_all(stream_id, MAX_ARTICLES_PER_FEED)
                         .await?;
@@ -1893,6 +1917,25 @@ mod tests {
         let page = page.replacen("</body>", &format!("{EXTERNAL_LINK_SCRIPT}</body>"), 1);
         assert_eq!(page.matches("__readyou_open").count(), 1);
         assert!(page.contains("</body>"));
+    }
+
+    #[test]
+    fn first_sync_is_always_full_and_later_syncs_are_incremental() {
+        let now = chrono::Utc::now();
+        let recent = now.to_rfc3339();
+        let stale = (now - chrono::Duration::hours(FULL_RECONCILE_HOURS + 1)).to_rfc3339();
+
+        // Fresh install: subscription discovery left both timestamps empty.
+        assert!(needs_full_sync(None, None, now), "首次安装必须全量");
+        // Upgrade from an older build: article pass happened but no full pass.
+        assert!(needs_full_sync(Some(&recent), None, now), "旧版本升级必须补一次全量");
+        // Full pass older than the reconcile interval.
+        assert!(needs_full_sync(Some(&recent), Some(&stale), now), "过期全量需重做");
+        // Normal case: recent full pass and last sync -> incremental is safe.
+        assert!(
+            !needs_full_sync(Some(&recent), Some(&recent), now),
+            "近期已全量则走增量"
+        );
     }
 
     #[test]

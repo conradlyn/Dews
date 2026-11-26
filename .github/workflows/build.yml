@@ -99,7 +99,6 @@ jobs:
           $stage = "portable-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/dews.exe" -Destination $stage
-          New-Item -ItemType File -Force -Path (Join-Path $stage "portable") | Out-Null
           $zip = "dews_1.0.0_portable.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
           Write-Host "Created $zip"

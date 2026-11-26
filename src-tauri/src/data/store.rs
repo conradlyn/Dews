@@ -80,58 +80,114 @@ pub struct JsonAppStore {
     last_content_hash: Mutex<Option<u64>>,
 }
 
-impl JsonAppStore {
-    /// Portable mode: a "portable" marker next to the exe keeps data in ./data.
-    pub fn new(data_path: Option<PathBuf>) -> Self {
-        let base = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("."));
-        let portable = base.join("portable").exists();
-        let dir = if portable {
-            base.join("data")
-        } else {
-            #[cfg(target_os = "macos")]
-            {
-                // macOS apps launched from Finder have a read-only CWD (usually
-                // "/"), so never fall back to "." here. Use the standard
-                // per-user Application Support directory.
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("."));
-                home.join("Library/Application Support/dews")
-            }
-            #[cfg(target_os = "windows")]
-            {
-                let local = std::env::var_os("LOCALAPPDATA")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("."));
-                // Renamed from ReadYouTauri: keep reading the old folder so an
-                // existing install does not lose its library.
-                let legacy = local.join("ReadYouTauri");
-                let current = local.join("dews");
-                if !current.exists() && legacy.exists() {
-                    legacy
-                } else {
-                    current
-                }
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            {
-                let data_home = std::env::var_os("XDG_DATA_HOME")
-                    .map(PathBuf::from)
-                    .or_else(|| {
-                        std::env::var_os("HOME")
-                            .map(|h| PathBuf::from(h).join(".local/share"))
-                    })
-                    .unwrap_or_else(|| PathBuf::from("."));
-                data_home.join("dews")
-            }
-        };
-        if let Err(e) = fs::create_dir_all(&dir) {
-            eprintln!("无法创建数据目录 {dir:?}：{e}");
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dir_is_writable(dir: &Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(".dews-write-test-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
         }
-        let path = data_path.unwrap_or_else(|| dir.join("data.json"));
+        Err(_) => false,
+    }
+}
+
+/// Decide whether the exe's own directory can hold the library. A legacy
+/// `portable` marker still works, but is no longer required: an existing
+/// `./data` folder or a writable exe directory is enough. macOS keeps the
+/// old conservative behaviour because app bundles often live in shared
+/// locations; `DEWS_DATA_DIR` can still force portable mode there.
+fn portable_data_dir(base: &Path) -> Option<PathBuf> {
+    let data = base.join("data");
+    let legacy_marker = base.join("portable").exists();
+    let existing = data.exists();
+    #[cfg(not(target_os = "macos"))]
+    let writable = dir_is_writable(base) || dir_is_writable(&data);
+    #[cfg(target_os = "macos")]
+    let writable = false;
+    if legacy_marker || existing || writable {
+        Some(data)
+    } else {
+        None
+    }
+}
+
+fn os_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS apps launched from Finder have a read-only CWD (usually
+        // "/"), so never fall back to "." here. Use the standard
+        // per-user Application Support directory.
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        home.join("Library/Application Support/dews")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        // Renamed from ReadYouTauri: keep reading the old folder so an
+        // existing install does not lose its library.
+        let legacy = local.join("ReadYouTauri");
+        let current = local.join("dews");
+        if !current.exists() && legacy.exists() {
+            legacy
+        } else {
+            current
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let data_home = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        data_home.join("dews")
+    }
+}
+
+/// Explicit override first, then auto-portable beside the exe, then the
+/// platform's per-user data directory.
+fn resolve_data_dir(base: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("DEWS_DATA_DIR") {
+        PathBuf::from(dir)
+    } else {
+        portable_data_dir(base).unwrap_or_else(os_data_dir)
+    }
+}
+
+impl JsonAppStore {
+    /// Data location, in priority order:
+    /// 1. `DEWS_DATA_DIR` when set explicitly;
+    /// 2. `./data` beside the exe when that folder is writable or already holds a library;
+    /// 3. the OS per-user data directory.
+    ///
+    /// The old `portable` marker is still honoured for existing installs, but
+    /// it is no longer required.
+    pub fn new(data_path: Option<PathBuf>) -> Self {
+        let path = match data_path {
+            Some(path) => path,
+            None => resolve_data_dir(&exe_dir()).join("data.json"),
+        };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
         }
@@ -148,10 +204,7 @@ impl JsonAppStore {
     }
 
     pub fn is_portable() -> bool {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("portable").exists()))
-            .unwrap_or(false)
+        std::env::var_os("DEWS_DATA_DIR").is_some() || portable_data_dir(&exe_dir()).is_some()
     }
 
     pub fn load(&self) -> AppData {
@@ -598,6 +651,27 @@ mod tests {
         if let Some(account) = cipher.strip_prefix(KEYCHAIN_MARKER) {
             let _ = keychain_delete(account);
         }
+    }
+
+    #[test]
+    fn legacy_portable_marker_is_still_honoured() {
+        let base = std::env::temp_dir().join(format!("dews_marker_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("portable"), "").unwrap();
+        assert_eq!(portable_data_dir(&base), Some(base.join("data")));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn writable_exe_dir_is_portable_without_marker() {
+        let base =
+            std::env::temp_dir().join(format!("dews_auto_portable_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        assert_eq!(portable_data_dir(&base), Some(base.join("data")));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[cfg(target_os = "macos")]

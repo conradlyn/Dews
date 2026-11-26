@@ -15,11 +15,11 @@
 - 工具栏与筛选按钮支持「图标 + 文字」或「仅图标」两种风格
 - 本地账户订阅源分组：新建、重命名、排序、删除与归属调整
 - OPML 导入 / 导出，深色主题
-- 便携模式：exe 同目录放一个空的 `portable` 文件，数据即存放在 `./data`
+- 便携模式：exe 所在目录可写（或已有 `./data`）时自动启用，无需 `portable` 空文件；也可用 `DEWS_DATA_DIR` 显式指定数据目录
 
 ## 数据存放
 
-- 便携模式：`./data/data.json`（元数据）与 `./data/content.json`（正文）
+- 自动便携模式：`./data/data.json`（元数据）与 `./data/content.json`（正文）；旧的 `portable` 空文件仍兼容，但不再需要
 - 安装模式（Windows）：`%LOCALAPPDATA%\dews\`
 - 安装模式（macOS）：`~/Library/Application Support/dews/`
 - 安装模式（Linux）：`$XDG_DATA_HOME/dews/`（未设置时为 `~/.local/share/dews/`）
@@ -51,7 +51,7 @@ macOS 本地一键构建（`.app` + `.dmg`）：
 `.github/workflows/build.yml` 在推送 `main`、`local/**` 分支、推送 `v*` 标签、PR 或手动触发时构建三类产物，并在 Actions 页面以 artifact 形式提供下载。推送 `v*` 标签时，还会自动创建 GitHub Release 并附上全部产物：
 
 - Windows 安装版：NSIS（`*-setup.exe`）与 MSI
-- Windows 便携版：`dews_*_portable.zip`（含 `dews.exe` 与空的 `portable` 标记文件）
+- Windows 便携版：`dews_*_portable.zip`（含 `dews.exe`，首次运行自动生成 `./data`）
 - macOS：`dews_1.0.0_aarch64.dmg`（arm64）
 
 macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环境下的 `grep` 兼容问题。当前构建为 ad-hoc 签名，对外分发仍需 Developer ID 签名与公证。
