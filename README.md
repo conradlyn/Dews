@@ -65,7 +65,7 @@ macOS 本地一键构建（`.app` + `.dmg`）：
 
 - Windows 安装版：NSIS（`*-setup.exe`）与 MSI
 - Windows 便携版：`Dews_*_portable.zip`（含 `Dews.exe`，首次运行自动生成 `./data`）
-- macOS：`Dews_1.1.0_aarch64.dmg`（arm64）
+- macOS：`Dews_1.1.1_aarch64.dmg`（arm64）
 
 macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环境下的 `grep` 兼容问题。当前构建为 ad-hoc 签名，对外分发仍需 Developer ID 签名与公证。
 
