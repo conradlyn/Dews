@@ -25,7 +25,7 @@
 - 本地账户订阅源分组：新建、重命名、排序、删除与归属调整
 - OPML 导入 / 导出，深色主题
 - 同步过程中按订阅源即时刷新未读计数：每个源拉取完成就把新文章并入列表，不必等全部源结束
-- 未读总数显示在应用图标上：macOS 为 Dock 数字徽标，Windows 为任务栏图标上的星形角标
+- 未读总数显示在应用图标上：macOS 为 Dock 数字徽标；Windows 的任务栏角标是一枚多角星，只在「有新文章还没看」时出现，点开任意一篇文章后即消失
 - 关闭窗口只是隐藏而不退出：macOS 点击 Dock 图标恢复、Cmd+Q 或 Dock 右键退出；Windows 常驻系统托盘，右键菜单含显示窗口 / 最小化到托盘 / 最大化还原 / 设置 / 退出，双击托盘图标恢复
 - 便携模式：exe 所在目录可写（或已有 `./data`）时自动启用，无需 `portable` 空文件；也可用 `DEWS_DATA_DIR` 显式指定数据目录
 - 应用内更新：启动时静默检查 GitHub Release，发现新版本时「设置」按钮出现提示点；「设置 → 关于」可手动检查、查看发布说明，点「更新到 vX.Y.Z」即下载安装并自动重启
@@ -65,7 +65,7 @@ macOS 本地一键构建（`.app` + `.dmg`）：
 
 - Windows 安装版：NSIS（`*-setup.exe`）与 MSI
 - Windows 便携版：`Dews_*_portable.zip`（含 `Dews.exe`，首次运行自动生成 `./data`）
-- macOS：`Dews_1.1.3_aarch64.dmg`（arm64）
+- macOS：`Dews_1.1.4_aarch64.dmg`（arm64）
 
 macOS 的 dmg 由 `hdiutil` 生成，避免 Tauri 自带 dmg 脚本在部分环境下的 `grep` 兼容问题。当前构建为 ad-hoc 签名，对外分发仍需 Developer ID 签名与公证。
 

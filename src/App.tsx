@@ -184,14 +184,24 @@ export default function App() {
     [data?.articles],
   );
 
+  /**
+   * Windows taskbar star: set when a sync pulls in new articles, cleared as
+   * soon as the reader opens one. It is deliberately *not* derived from
+   * `unreadTotal` — an unread count can sit there for days without meaning
+   * "look at this now", which is exactly the noise the star should avoid.
+   */
+  const [newAlert, setNewAlert] = useState(false);
+
   // Keep the Dock badge / taskbar overlay in step with the visible count. The
   // UI owns this number because it also covers optimistic read/star updates
   // that never reach the server.
   useEffect(() => {
-    void api.setUnreadBadge(unreadTotal).catch(() => {
+    // The star is pointless once nothing is unread (marking one article read
+    // by hand can get there without opening anything).
+    void api.setUnreadBadge(unreadTotal, newAlert && unreadTotal > 0).catch(() => {
       /* cosmetic only: a failed badge must never surface as an error toast */
     });
-  }, [unreadTotal]);
+  }, [unreadTotal, newAlert]);
 
   // The Windows tray menu asks the UI to open the settings dialog.
   useEffect(() => {
@@ -487,6 +497,9 @@ export default function App() {
     };
 
   const handleSelect = useCallback((id: string) => {
+    // Opening an article is the reader acknowledging the new arrivals, so the
+    // taskbar star goes away here rather than when everything is read.
+    setNewAlert(false);
     if (id === selectedId || !data) return;
     const previous = selectedId ? articleById.get(selectedId) : undefined;
     const next = articleById.get(id);
@@ -544,6 +557,8 @@ export default function App() {
   // Mark the current visible list as read in one backend call. The Rust side
   // queues remote marks instead of raising a toast per article.
   const markAllRead = useCallback(() => {
+    // Marking the backlog read is a deliberate "I have dealt with this" too.
+    setNewAlert(false);
     const ids = articles
       .filter((article) => !article.is_read)
       .map((article) => article.id);
@@ -658,6 +673,9 @@ export default function App() {
             try {
               const result = await api.syncFeedArticles(feed.id);
               totalArticles += result.articles;
+              // Something new arrived: light up the taskbar star until the
+              // reader opens an article.
+              if (result.articles > 0) setNewAlert(true);
               // Publish this feed immediately so its unread count appears
               // while the other workers are still running.
               applyFeedSync(result);

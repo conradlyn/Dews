@@ -217,12 +217,16 @@ pub fn bootstrap(state: State<'_, AppState>) -> Result<AppDataView, String> {
     })
 }
 
-/// Push the unread total to the native shell: a Dock badge on macOS, a star
-/// overlay on the Windows taskbar button. The UI owns the number because it
-/// also reflects optimistic read/star updates that never touch the server.
+/// Push the unread total and the "new articles" hint to the native shell.
+///
+/// macOS renders the count as a Dock badge. Windows renders a star overlay,
+/// which is driven by `alert` rather than by the count: the star is a nudge to
+/// look at what just arrived, so the UI clears it as soon as the reader opens
+/// an article. The UI owns both values because it also reflects optimistic
+/// read/star updates that never touch the server.
 #[tauri::command]
-pub fn set_unread_badge(count: usize, app: tauri::AppHandle) {
-    crate::desktop::set_badge(&app, count);
+pub fn set_unread_badge(count: usize, alert: bool, app: tauri::AppHandle) {
+    crate::desktop::set_badge(&app, count, alert);
 }
 
 /// Relaunch after an update was installed. The macOS updater only swaps the

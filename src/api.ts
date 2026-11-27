@@ -17,8 +17,13 @@ export const api = {
   saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
   getFonts: () => invoke<string[]>("get_fonts"),
   isPortable: () => invoke<boolean>("is_portable"),
-  /** Dock badge (macOS) / taskbar star overlay (Windows). 0 clears it. */
-  setUnreadBadge: (count: number) => invoke<void>("set_unread_badge", { count }),
+  /**
+   * Dock badge (macOS) / taskbar star overlay (Windows).
+   * `alert` only affects Windows, where the star means "new articles you have
+   * not opened yet" and is cleared once the reader picks an article.
+   */
+  setUnreadBadge: (count: number, alert: boolean) =>
+    invoke<void>("set_unread_badge", { count, alert }),
   /** Relaunch into the freshly installed build (macOS needs this). */
   restartApp: () => invoke<void>("restart_app"),
 
