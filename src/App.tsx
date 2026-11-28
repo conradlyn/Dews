@@ -12,6 +12,7 @@ import FeedPane from "./components/FeedPane";
 import ReadingPane from "./components/ReadingPane";
 import SettingsDialog from "./components/SettingsDialog";
 import type {
+  AccountKind,
   AppData,
   AppSettings,
   Article,
@@ -43,6 +44,13 @@ interface SyncState {
   errors: string[];
 }
 
+/// Short label for the account kind shown in the account switcher.
+function accountKindLabel(kind: AccountKind): string {
+  if (kind === "Local") return "本地";
+  if (kind === "FreshRSS") return "FreshRSS";
+  return "Google Reader";
+}
+
 export default function App() {
   const [data, setData] = useState<AppData | null>(null);
   const [fonts, setFonts] = useState<string[]>([]);
@@ -64,6 +72,7 @@ export default function App() {
   const [confirmFeedId, setConfirmFeedId] = useState<string | null>(null);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<UpdateState>({ status: "idle" });
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   // The plugin's Update handle owns a Rust-side resource, so it cannot live in
   // React state; only its serialisable description does.
   const pendingUpdate = useRef<Update | null>(null);
@@ -179,18 +188,74 @@ export default function App() {
     });
   }, []);
 
-  const unreadTotal = useMemo(
-    () => (data ? data.articles.reduce((n, a) => (a.is_read ? n : n + 1), 0) : 0),
-    [data?.articles],
+  /**
+   * The account the whole view belongs to. Feeds, groups, articles and every
+   * counter are filtered by it, so two accounts never share one list.
+   */
+  const activeAccountId = data?.accounts.find((a) => a.is_active)?.id ?? null;
+
+  const accountFeeds = useMemo(
+    () =>
+      data
+        ? data.feeds.filter((f) => activeAccountId === null || f.account_id === activeAccountId)
+        : [],
+    [data?.feeds, activeAccountId],
   );
 
+  const accountGroups = useMemo(
+    () =>
+      data
+        ? data.groups.filter((g) => activeAccountId === null || g.account_id === activeAccountId)
+        : [],
+    [data?.groups, activeAccountId],
+  );
+
+  const accountArticles = useMemo(
+    () =>
+      data
+        ? data.articles.filter(
+            (a) => activeAccountId === null || a.account_id === activeAccountId,
+          )
+        : [],
+    [data?.articles, activeAccountId],
+  );
+
+  const unreadTotal = useMemo(
+    () => accountArticles.reduce((n, a) => (a.is_read ? n : n + 1), 0),
+    [accountArticles],
+  );
+
+  // Unread counts for every account, so the switcher can show where the
+  // unread articles actually are.
+  const unreadByAccount = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const article of data?.articles ?? []) {
+      if (article.is_read) continue;
+      map.set(article.account_id, (map.get(article.account_id) ?? 0) + 1);
+    }
+    return map;
+  }, [data?.articles]);
+
   /**
-   * Windows taskbar star: set when a sync pulls in new articles, cleared as
-   * soon as the reader opens one. It is deliberately *not* derived from
-   * `unreadTotal` — an unread count can sit there for days without meaning
-   * "look at this now", which is exactly the noise the star should avoid.
+   * Windows taskbar star, kept per account: a sync only ever runs for the
+   * active account, so the star has to survive switching away and coming
+   * back — those articles are still unread. It is deliberately *not* derived
+   * from `unreadTotal`, because an unread count can sit there for days
+   * without meaning "look at this now", which is exactly the noise the star
+   * should avoid.
    */
-  const [newAlert, setNewAlert] = useState(false);
+  const [alerts, setAlerts] = useState<Record<number, boolean>>({});
+  const newAlert = activeAccountId === null ? false : (alerts[activeAccountId] ?? false);
+
+  const raiseAlert = useCallback((accountId: number | null) => {
+    if (accountId === null) return;
+    setAlerts((prev) => (prev[accountId] ? prev : { ...prev, [accountId]: true }));
+  }, []);
+
+  const clearAlert = useCallback((accountId: number | null) => {
+    if (accountId === null) return;
+    setAlerts((prev) => (prev[accountId] ? { ...prev, [accountId]: false } : prev));
+  }, []);
 
   // Keep the Dock badge / taskbar overlay in step with the visible count. The
   // UI owns this number because it also covers optimistic read/star updates
@@ -289,7 +354,7 @@ export default function App() {
 
   const articles = useMemo(() => {
     if (!data) return [];
-    let list = data.articles.slice();
+    let list = accountArticles.slice();
     switch (scope.type) {
       case "unread":
         list = list.filter((a) => !a.is_read);
@@ -302,7 +367,7 @@ export default function App() {
         break;
       case "group": {
         const ids = new Set(
-          data.feeds.filter((f) => f.group_id === scope.id).map((f) => f.id),
+          accountFeeds.filter((f) => f.group_id === scope.id).map((f) => f.id),
         );
         list = list.filter((a) => ids.has(a.feed_id));
         break;
@@ -328,15 +393,17 @@ export default function App() {
       }
     }
     return list.sort((a, b) => b.published - a.published);
-  }, [data, scope, query, searchResult]);
+  }, [data, accountArticles, accountFeeds, scope, query, searchResult]);
 
+  // Scoped to the account as well: switching accounts must drop a selection
+  // that belongs to the account the reader just left.
   const articleById = useMemo(
-    () => new Map((data?.articles ?? []).map((a) => [a.id, a] as const)),
-    [data?.articles],
+    () => new Map(accountArticles.map((a) => [a.id, a] as const)),
+    [accountArticles],
   );
   const selected = selectedId ? articleById.get(selectedId) ?? null : null;
   const feedTitle = selected
-    ? data?.feeds.find((f) => f.id === selected.feed_id)?.title ?? ""
+    ? accountFeeds.find((f) => f.id === selected.feed_id)?.title ?? ""
     : "";
   const scopeTitle =
     scope.type === "all"
@@ -499,7 +566,7 @@ export default function App() {
   const handleSelect = useCallback((id: string) => {
     // Opening an article is the reader acknowledging the new arrivals, so the
     // taskbar star goes away here rather than when everything is read.
-    setNewAlert(false);
+    clearAlert(activeAccountId);
     if (id === selectedId || !data) return;
     const previous = selectedId ? articleById.get(selectedId) : undefined;
     const next = articleById.get(id);
@@ -534,7 +601,7 @@ export default function App() {
         });
       }
     }
-  }, [selectedId, data, articleById, notify, refresh]);
+  }, [selectedId, data, articleById, notify, refresh, activeAccountId, clearAlert]);
 
   const toggleStar = useCallback((article: Article) => {
     const starred = !article.is_starred;
@@ -558,7 +625,7 @@ export default function App() {
   // queues remote marks instead of raising a toast per article.
   const markAllRead = useCallback(() => {
     // Marking the backlog read is a deliberate "I have dealt with this" too.
-    setNewAlert(false);
+    clearAlert(activeAccountId);
     const ids = articles
       .filter((article) => !article.is_read)
       .map((article) => article.id);
@@ -589,7 +656,7 @@ export default function App() {
         notify(String(e), true);
         void refresh();
       });
-  }, [articles, notify, refresh]);
+  }, [articles, notify, refresh, activeAccountId, clearAlert]);
 
   // Download the original page and extract its full text. The Rust command
   // persists the result, so we update the iframe and reload article data.
@@ -613,8 +680,43 @@ export default function App() {
     void api.openExternal(url).catch((e) => notify(String(e), true));
   }, [notify]);
 
+  /**
+   * Switch the account the whole view belongs to. The backend makes it the
+   * active one, so a later sync follows the same account.
+   */
+  const switchToAccount = useCallback(
+    async (id: number) => {
+      setAccountMenuOpen(false);
+      if (id === activeAccountId) return;
+      try {
+        const accounts = await api.switchAccount(id);
+        setData((prev) => (prev ? { ...prev, accounts } : prev));
+        // The current scope may name a feed or group that does not exist in
+        // the other account, so start from the top again. Drop the selection
+        // too: otherwise the reading pane would still fetch and show an
+        // article belonging to the account just left.
+        setScope({ type: "all" });
+        setSelectedId(null);
+      } catch (e) {
+        notify(String(e), true);
+      }
+    },
+    [activeAccountId, notify],
+  );
+
+  // Close the account menu when the reader clicks anywhere else.
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".account-switcher")) setAccountMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [accountMenuOpen]);
+
   const runSync = useCallback(
-    async (showToast = true) => {
+    async (showToast = true, accountId?: number) => {
       if (syncingRef.current) return;
       syncingRef.current = true;
       setBusy(true);
@@ -630,6 +732,10 @@ export default function App() {
       const errors: string[] = [];
       let totalArticles = 0;
       let plan: SyncPlan | null = null;
+      // A sync only ever runs for the account that is active when it starts.
+      // Pin it here so the star lands on the right account even if the reader
+      // switches away while the download is still running.
+      const syncAccountId = accountId ?? activeAccountId;
       try {
         plan = await api.syncSubscriptions();
         errors.push(...plan.errors);
@@ -675,7 +781,7 @@ export default function App() {
               totalArticles += result.articles;
               // Something new arrived: light up the taskbar star until the
               // reader opens an article.
-              if (result.articles > 0) setNewAlert(true);
+              if (result.articles > 0) raiseAlert(syncAccountId);
               // Publish this feed immediately so its unread count appears
               // while the other workers are still running.
               applyFeedSync(result);
@@ -725,7 +831,7 @@ export default function App() {
         window.setTimeout(() => setSyncState(null), 2600);
       }
     },
-    [notify, refresh, applyFeedSync],
+    [notify, refresh, applyFeedSync, activeAccountId, raiseAlert],
   );
 
   useEffect(() => {
@@ -871,9 +977,44 @@ export default function App() {
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="toolbar-spacer" />
-        <span className="account-chip">
-          {activeAccount?.name || "本地账户"}
-        </span>
+        <div className="account-switcher">
+          <button
+            className="account-chip"
+            onClick={() => setAccountMenuOpen((open) => !open)}
+            title="切换账户"
+            aria-haspopup="menu"
+            aria-expanded={accountMenuOpen}
+          >
+            <Icon name="account" size={13} />
+            <span className="account-name">{activeAccount?.name || "本地账户"}</span>
+            <span className="account-caret" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+          {accountMenuOpen && (
+            <div className="account-menu" role="menu">
+              {data.accounts.map((account) => {
+                const count = unreadByAccount.get(account.id) ?? 0;
+                return (
+                  <button
+                    key={account.id}
+                    role="menuitemradio"
+                    aria-checked={account.is_active}
+                    className={`account-item${account.is_active ? " active" : ""}`}
+                    onClick={() => void switchToAccount(account.id)}
+                  >
+                    <span className="account-dot" aria-hidden="true" />
+                    <span className="account-item-name">{account.name}</span>
+                    <span className="account-kind">
+                      {accountKindLabel(account.kind)}
+                    </span>
+                    {count > 0 && <span className="account-count">{count}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <button
           className={`tool-btn quiet${compactButtons ? " icon-only" : ""}${update.status === "available" ? " has-update" : ""}`}
           onClick={() => setDialog("settings")}
@@ -893,7 +1034,10 @@ export default function App() {
 
       <div className="workspace" ref={workspaceRef} style={workspaceStyle}>
         <FeedPane
-          data={data}
+          feeds={accountFeeds}
+          groups={accountGroups}
+          articles={accountArticles}
+          settings={settings}
           scope={scope}
           onScope={setScope}
           onRemoveFeed={(id) => void removeFeed(id)}
@@ -975,7 +1119,7 @@ export default function App() {
           onAccounts={(accounts) => setData((prev) => (prev ? { ...prev, accounts } : prev))}
           onAccountSaved={(accounts, savedId) => {
             const saved = accounts.find((a) => a.id === savedId);
-            if (saved?.is_active && saved.kind !== "Local") void runSync();
+            if (saved?.is_active && saved.kind !== "Local") void runSync(true, savedId);
           }}
           groups={data.groups}
           feeds={data.feeds}

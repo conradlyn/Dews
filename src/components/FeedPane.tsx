@@ -1,8 +1,14 @@
 import { memo, useMemo, useState } from "react";
-import type { AppData, Scope } from "../types";
+import type { AppSettings, Article, Feed, FeedGroup, Scope } from "../types";
 
 interface Props {
-  data: AppData;
+  /** Feeds of the active account only. */
+  feeds: Feed[];
+  /** Groups of the active account only. */
+  groups: FeedGroup[];
+  /** Articles of the active account only, used for the unread counters. */
+  articles: Article[];
+  settings: AppSettings;
   scope: Scope;
   onScope: (scope: Scope) => void;
   onRemoveFeed: (id: string) => void;
@@ -14,7 +20,7 @@ function sameScope(a: Scope, b: Scope): boolean {
   return true;
 }
 
-function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
+function FeedPane({ feeds, groups, articles, settings, scope, onScope, onRemoveFeed }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [failedIcons, setFailedIcons] = useState<Set<string>>(new Set());
 
@@ -22,9 +28,9 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
   // identified as "feed/2". Article links still carry the real site origin,
   // so derive one per feed as a fallback for favicon lookup.
   const siteOriginByFeed = useMemo(() => {
-    const needed = new Set(data.feeds.map((f) => f.id));
+    const needed = new Set(feeds.map((f) => f.id));
     const map = new Map<string, string>();
-    for (const article of data.articles) {
+    for (const article of articles) {
       if (needed.size === 0) break;
       if (!needed.has(article.feed_id) || !article.link) continue;
       try {
@@ -37,9 +43,9 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
       }
     }
     return map;
-  }, [data.articles, data.feeds]);
+  }, [articles, feeds]);
 
-  const faviconUrl = (feed: (typeof data.feeds)[number]): string | null => {
+  const faviconUrl = (feed: Feed): string | null => {
     for (const raw of [feed.website, feed.url, siteOriginByFeed.get(feed.id)]) {
       if (!raw) continue;
       try {
@@ -55,22 +61,22 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
 
   const unreadByFeed = useMemo(() => {
     const map = new Map<string, number>();
-    for (const article of data.articles) {
+    for (const article of articles) {
       if (article.is_read) continue;
       map.set(article.feed_id, (map.get(article.feed_id) ?? 0) + 1);
     }
     return map;
-  }, [data.articles]);
+  }, [articles]);
 
-  const unreadTotal = data.articles.filter((a) => !a.is_read).length;
-  const starredTotal = data.articles.filter((a) => a.is_starred).length;
+  const unreadTotal = articles.filter((a) => !a.is_read).length;
+  const starredTotal = articles.filter((a) => a.is_starred).length;
 
   const unreadInGroup = (groupId: string) =>
-    data.feeds
+    feeds
       .filter((f) => f.group_id === groupId)
       .reduce((sum, f) => sum + (unreadByFeed.get(f.id) ?? 0), 0);
 
-  const feedRow = (feed: (typeof data.feeds)[number], nested = false) => {
+  const feedRow = (feed: Feed, nested = false) => {
     const count = unreadByFeed.get(feed.id) ?? 0;
     const icon = faviconUrl(feed);
     const showIcon = icon && !failedIcons.has(feed.id);
@@ -110,17 +116,17 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
     );
   };
 
-  const groups = data.groups.filter((g) => data.feeds.some((f) => f.group_id === g.id));
-  const ungrouped = data.feeds.filter(
-    (f) => !f.group_id || !data.groups.some((g) => g.id === f.group_id),
+  const visibleGroups = groups.filter((g) => feeds.some((f) => f.group_id === g.id));
+  const ungrouped = feeds.filter(
+    (f) => !f.group_id || !groups.some((g) => g.id === f.group_id),
   );
 
   return (
     <aside
       className="feed-pane"
       style={{
-        fontFamily: `"${data.settings.feed_font_family}", "Microsoft YaHei", sans-serif`,
-        fontSize: data.settings.feed_font_size,
+        fontFamily: `"${settings.feed_font_family}", "Microsoft YaHei", sans-serif`,
+        fontSize: settings.feed_font_size,
       }}
     >
       <div className="scroll">
@@ -150,9 +156,9 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
         </div>
 
         <div className="section-label">订阅源</div>
-        {groups.map((group) => {
+        {visibleGroups.map((group) => {
           const isCollapsed = collapsed[group.id] ?? false;
-          const feeds = data.feeds.filter((f) => f.group_id === group.id);
+          const groupFeeds = feeds.filter((f) => f.group_id === group.id);
           const count = unreadInGroup(group.id);
           return (
             <div key={group.id}>
@@ -172,13 +178,13 @@ function FeedPane({ data, scope, onScope, onRemoveFeed }: Props) {
                 <span className="label">{group.name}</span>
                 {count > 0 && <span className="count">{count}</span>}
               </div>
-              {!isCollapsed && feeds.map((feed) => feedRow(feed, true))}
+              {!isCollapsed && groupFeeds.map((feed) => feedRow(feed, true))}
             </div>
           );
         })}
         {ungrouped.map((feed) => feedRow(feed))}
 
-        {data.feeds.length === 0 && (
+        {feeds.length === 0 && (
           <div className="empty">
             <div className="big">📡</div>
             <div>还没有订阅源</div>

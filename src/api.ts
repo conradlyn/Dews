@@ -66,6 +66,8 @@ export const api = {
   ) =>
     invoke<void>("validate_account", { kind, endpoint, username, password }),
   saveAccount: (input: AccountInput) => invoke<Account[]>("save_account", { input }),
+  /** Make one account the active one; the whole view follows it. */
+  switchAccount: (id: number) => invoke<Account[]>("switch_account", { id }),
   deleteAccount: (id: number) => invoke<Account[]>("delete_account", { id }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
 };

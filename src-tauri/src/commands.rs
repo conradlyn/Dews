@@ -240,14 +240,28 @@ pub fn restart_app(app: tauri::AppHandle) {
 /// Full-text search runs in Rust so the UI never has to receive article bodies.
 #[tauri::command]
 pub fn search_articles(query: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let term = query.trim().to_ascii_lowercase();
+    let term = query.trim();
     if term.is_empty() {
         return Ok(Vec::new());
     }
     let data = state.lock()?;
-    Ok(data
-        .articles
+    // Only the active account: a search must not surface articles the reader
+    // cannot see in the current view.
+    Ok(search_in_account(&data, term))
+}
+
+/// The account the whole view belongs to.
+fn active_account_id(data: &AppData) -> Option<i32> {
+    data.accounts.iter().find(|a| a.is_active).map(|a| a.id)
+}
+
+/// Article ids matching the query, restricted to the active account.
+fn search_in_account(data: &AppData, term: &str) -> Vec<String> {
+    let term = term.to_ascii_lowercase();
+    let active = active_account_id(data);
+    data.articles
         .iter()
+        .filter(|a| active.is_none_or(|id| a.account_id == id))
         .filter(|a| {
             a.title.to_ascii_lowercase().contains(&term)
                 || a
@@ -260,7 +274,7 @@ pub fn search_articles(query: String, state: State<'_, AppState>) -> Result<Vec<
                     .is_some_and(|t| t.to_ascii_lowercase().contains(&term))
         })
         .map(|a| a.id.clone())
-        .collect())
+        .collect()
 }
 
 #[tauri::command]
@@ -1808,7 +1822,29 @@ pub async fn import_opml(xml: String, state: State<'_, AppState>) -> Result<Stri
 #[tauri::command]
 pub fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
     let data = state.lock()?;
-    Ok(opml::export(&data.feeds, &data.groups))
+    // Export the active account only. Mixing accounts into one file would
+    // undo the separation the reader just asked for.
+    let (feeds, groups) = account_scope(&data);
+    Ok(opml::export(&feeds, &groups))
+}
+
+/// The feeds and groups that belong to the active account.
+fn account_scope(data: &AppData) -> (Vec<Feed>, Vec<FeedGroup>) {
+    match active_account_id(data) {
+        Some(id) => (
+            data.feeds
+                .iter()
+                .filter(|f| f.account_id == id)
+                .cloned()
+                .collect(),
+            data.groups
+                .iter()
+                .filter(|g| g.account_id == id)
+                .cloned()
+                .collect(),
+        ),
+        None => (data.feeds.clone(), data.groups.clone()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1882,6 +1918,28 @@ pub fn save_account(input: AccountInput, state: State<'_, AppState>) -> Result<V
     }
     state.persist(&data)?;
     Ok(data.accounts.clone())
+}
+
+#[tauri::command]
+pub fn switch_account(id: i32, state: State<'_, AppState>) -> Result<Vec<Account>, String> {
+    let mut data = state.lock()?;
+    // One account is active at a time. The UI follows the active account, and
+    // a sync only ever touches it, so this is what keeps two accounts from
+    // sharing one list of feeds.
+    switch_account_in(&mut data, id)?;
+    state.persist(&data)?;
+    Ok(data.accounts.clone())
+}
+
+/// Move the active flag to one account.
+fn switch_account_in(data: &mut AppData, id: i32) -> Result<(), String> {
+    if !data.accounts.iter().any(|a| a.id == id) {
+        return Err(format!("找不到账户 {id}"));
+    }
+    for account in data.accounts.iter_mut() {
+        account.is_active = account.id == id;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2355,4 +2413,77 @@ mod tests {
         assert!(changed.iter().find(|a| a.id == "a2").unwrap().is_read);
         assert!(!changed.iter().find(|a| a.id == "a3").unwrap().is_read);
     }
+
+
+    fn two_accounts() -> AppData {
+        AppData {
+            accounts: vec![
+                Account {
+                    id: 1,
+                    kind: AccountKind::Local,
+                    name: "news".to_string(),
+                    is_active: true,
+                    ..Account::default()
+                },
+                Account {
+                    id: 2,
+                    kind: AccountKind::FreshRSS,
+                    name: "other".to_string(),
+                    is_active: false,
+                    ..Account::default()
+                },
+            ],
+            groups: vec![
+                FeedGroup { id: "g-news".into(), account_id: 1, name: "News".into() },
+                FeedGroup { id: "g-other".into(), account_id: 2, name: "Other".into() },
+            ],
+            feeds: vec![
+                Feed { id: "f-news".into(), account_id: 1, title: "News feed".into(), ..Feed::default() },
+                Feed { id: "f-other".into(), account_id: 2, title: "Other feed".into(), ..Feed::default() },
+            ],
+            articles: vec![
+                Article { id: "a-news".into(), account_id: 1, title: "共同关键词 Alpha".into(), ..Article::default() },
+                Article { id: "a-other".into(), account_id: 2, title: "共同关键词 Alpha".into(), ..Article::default() },
+            ],
+            ..AppData::default()
+        }
+    }
+
+    #[test]
+    fn switching_accounts_leaves_exactly_one_active() {
+        let mut data = two_accounts();
+        assert_eq!(active_account_id(&data), Some(1));
+
+        switch_account_in(&mut data, 2).unwrap();
+        assert_eq!(active_account_id(&data), Some(2));
+        assert!(!data.accounts[0].is_active);
+        assert!(data.accounts[1].is_active);
+
+        assert!(switch_account_in(&mut data, 999).is_err());
+        assert_eq!(active_account_id(&data), Some(2), "a failed switch changes nothing");
+    }
+
+    #[test]
+    fn account_scope_excludes_the_other_account() {
+        let mut data = two_accounts();
+        let (feeds, groups) = account_scope(&data);
+        assert_eq!(feeds.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-news"]);
+        assert_eq!(groups.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), vec!["g-news"]);
+
+        switch_account_in(&mut data, 2).unwrap();
+        let (feeds, groups) = account_scope(&data);
+        assert_eq!(feeds.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-other"]);
+        assert_eq!(groups.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), vec!["g-other"]);
+    }
+
+    #[test]
+    fn search_never_crosses_accounts() {
+        let mut data = two_accounts();
+        // Both articles match, but only the active one may be returned.
+        assert_eq!(search_in_account(&data, "Alpha"), vec!["a-news"]);
+
+        switch_account_in(&mut data, 2).unwrap();
+        assert_eq!(search_in_account(&data, "Alpha"), vec!["a-other"]);
+    }
+
 }

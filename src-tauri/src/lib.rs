@@ -47,6 +47,7 @@ pub fn run() {
             commands::export_opml,
             commands::validate_account,
             commands::save_account,
+            commands::switch_account,
             commands::delete_account,
             commands::open_external,
         ])
